@@ -1,0 +1,46 @@
+/*
+  Forza Gamepad Skin — White Xbox One Controller
+  ==============================================
+  Designed for use with gamepadviewer.com as an OBS overlay while playing
+  Forza on a white Xbox One controller.
+
+  Two changes from the stock White Xbox One skin (s=0):
+
+    1. Analog sticks are inverted — white at rest, black when L3/R3 is
+       clicked. Forza relies on tiny stick inputs, so resting sticks need
+       to read clearly against road backgrounds; the click flash drops to
+       black so it's still legible.
+
+    2. LT/RT are rendered as a white meter that fills bottom-up like a
+       pressure gauge, instead of the default fade in/out. This requires
+       smeter=1 in the gamepadviewer URL (see below) — that flag flips
+       gamepadviewer.com's internal trigger handling from
+       opacity-driven to clip-path-driven, and the white silhouette here
+       is what gets revealed bottom-up.
+
+  Apply via:
+    https://gamepadviewer.com/?s=0&smeter=1&editcss=<raw URL of this file>
+*/
+
+/* ---------- Sticks (inverted) ---------- */
+
+.controller.xbox.white .stick {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 83 83'><circle cx='41.5' cy='41.5' r='40' fill='%23ffffff' stroke='%239a9a9a' stroke-width='1.25'/><circle cx='41.5' cy='41.5' r='28' fill='%23e8e8e8' stroke='%23bcbcbc' stroke-width='0.75'/><circle cx='41.5' cy='34' r='10' fill='%23ffffff' opacity='0.85'/></svg>") !important;
+  background-position: 0 0 !important;
+  background-repeat: no-repeat !important;
+  background-size: 83px 83px !important;
+}
+
+.controller.xbox.white .stick.pressed {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 83 83'><circle cx='41.5' cy='41.5' r='40' fill='%231a1a1a' stroke='%23000000' stroke-width='1.25'/><circle cx='41.5' cy='41.5' r='28' fill='%232a2a2a' stroke='%23000000' stroke-width='0.75'/><circle cx='41.5' cy='34' r='10' fill='%233a3a3a' opacity='0.55'/></svg>") !important;
+  background-position: 0 0 !important;
+}
+
+/* ---------- Triggers (white meter) ---------- */
+
+.controller.xbox.white .trigger {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 121'><path d='M 16 4 L 62 4 Q 82 4 84 24 L 84 100 Q 84 117 66 117 L 22 117 Q 4 117 4 100 L 4 24 Q 6 4 26 4 Z' fill='%23ffffff' stroke='%23222222' stroke-width='2' stroke-linejoin='round'/></svg>") !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: contain !important;
+}

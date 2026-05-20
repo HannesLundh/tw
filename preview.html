@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Forza Gamepad Skin — Preview</title>
+<style>
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #2b2f36;
+    color: #e7e9ec;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 16px;
+  }
+  h1 { font-weight: 600; margin: 0 0 4px; font-size: 20px; }
+  p.lede { margin: 0 0 24px; color: #9aa1ad; font-size: 13px; }
+
+  /* Mock of gamepadviewer.com's DOM. The class chain matters:
+     .controller.xbox.white is what forza-white.css targets. */
+  .stage {
+    position: relative;
+    width: 480px;
+    height: 320px;
+    background: #3a3f48;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    margin-bottom: 32px;
+    padding: 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 24px;
+    place-items: center;
+  }
+  .stage .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #9aa1ad;
+    margin-bottom: 6px;
+  }
+  .cell { display: flex; flex-direction: column; align-items: center; }
+  .controller.xbox.white { display: contents; }
+
+  /* Sticks: 83x83 to match gamepadviewer.com's stick element size. */
+  .stick {
+    width: 83px;
+    height: 83px;
+    background-repeat: no-repeat;
+  }
+
+  /* Triggers: 88x121 to match gamepadviewer.com. RT gets the same
+     horizontal flip the real site applies via inline transform. */
+  .triggers {
+    display: contents;
+  }
+  .trigger {
+    width: 88px;
+    height: 121px;
+    opacity: 1;
+    background-repeat: no-repeat;
+  }
+  .trigger.right { transform: rotateY(180deg); }
+
+  /* Controls panel */
+  .controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px 32px;
+    width: 480px;
+  }
+  .control { display: flex; flex-direction: column; gap: 6px; }
+  .control label { font-size: 12px; color: #9aa1ad; }
+  button {
+    background: #4a5160;
+    color: #e7e9ec;
+    border: 1px solid #5a6170;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.on { background: #6c8cff; border-color: #6c8cff; color: #fff; }
+  input[type=range] { width: 100%; }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .val {
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: #9aa1ad;
+    min-width: 36px;
+    text-align: right;
+  }
+</style>
+<link rel="stylesheet" href="./forza-white.css">
+</head>
+<body>
+
+<h1>Forza Gamepad Skin — Preview</h1>
+<p class="lede">Local sanity check for the sticks &amp; trigger meter. Loads <code>forza-white.css</code>.</p>
+
+<div class="stage">
+  <!-- The class chain that forza-white.css targets -->
+  <div class="controller xbox white" style="display: contents;">
+    <div class="cell">
+      <div class="label">L stick</div>
+      <div class="stick left" id="stick-left"></div>
+    </div>
+    <div class="cell">
+      <div class="label">R stick</div>
+      <div class="stick right" id="stick-right"></div>
+    </div>
+    <div class="cell">
+      <div class="label">LT</div>
+      <div class="triggers" style="display: contents;">
+        <span class="trigger left" id="trigger-left"></span>
+      </div>
+    </div>
+    <div class="cell">
+      <div class="label">RT</div>
+      <div class="triggers" style="display: contents;">
+        <span class="trigger right" id="trigger-right"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="control">
+    <label>L3 (click left stick)</label>
+    <button id="btn-l3">released</button>
+  </div>
+  <div class="control">
+    <label>R3 (click right stick)</label>
+    <button id="btn-r3">released</button>
+  </div>
+  <div class="control">
+    <label>LT analog</label>
+    <div class="row">
+      <input type="range" id="range-lt" min="0" max="100" value="0">
+      <span class="val" id="val-lt">0%</span>
+    </div>
+  </div>
+  <div class="control">
+    <label>RT analog</label>
+    <div class="row">
+      <input type="range" id="range-rt" min="0" max="100" value="0">
+      <span class="val" id="val-rt">0%</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Toggle .pressed on the sticks (mirrors what gamepadviewer.com does on L3/R3)
+  function toggle(btnId, stickId) {
+    const btn = document.getElementById(btnId);
+    const stick = document.getElementById(stickId);
+    btn.addEventListener('click', () => {
+      const pressed = stick.classList.toggle('pressed');
+      btn.textContent = pressed ? 'pressed' : 'released';
+      btn.classList.toggle('on', pressed);
+    });
+  }
+  toggle('btn-l3', 'stick-left');
+  toggle('btn-r3', 'stick-right');
+
+  // Drive clip-path on the triggers (mirrors gamepadviewer.com's smeter=1 mode).
+  // gamepadviewer.com formula (from tester.js): inset = (1 - value) * 100%
+  // i.e. at value 0 the entire element is clipped away, at value 1 nothing
+  // is clipped, so the white fill grows bottom-up.
+  function bindTrigger(rangeId, valId, triggerId) {
+    const range = document.getElementById(rangeId);
+    const val = document.getElementById(valId);
+    const trigger = document.getElementById(triggerId);
+    function update() {
+      const v = range.valueAsNumber / 100;
+      const inset = ((1 - v) * 100).toFixed(2) + '%';
+      trigger.style.clipPath = `inset(${inset} 0 0 0)`;
+      trigger.style.webkitClipPath = `inset(${inset} 0 0 0)`;
+      val.textContent = range.value + '%';
+    }
+    range.addEventListener('input', update);
+    update();
+  }
+  bindTrigger('range-lt', 'val-lt', 'trigger-left');
+  bindTrigger('range-rt', 'val-rt', 'trigger-right');
+</script>
+
+</body>
+</html>
