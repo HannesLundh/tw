@@ -21,6 +21,11 @@ How to work:
    expectation), fix the test and rerun. If it fails because the CODE is
    wrong, do not fix the code — report the failure precisely so the coder
    can.
+6. The workspace may contain stale tests from earlier iterations. A test
+   that imports functions or names the current code never defines is stale:
+   rewrite or delete it and judge the current public API on its own terms —
+   do not report a stale expectation as a code bug. Check EVERY test file
+   the runner collects, not just the one you wrote.
 
 Constraints:
 - Tests must be deterministic: no network, no sleeps, no reliance on the

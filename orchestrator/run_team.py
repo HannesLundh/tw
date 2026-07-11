@@ -249,6 +249,8 @@ class Agent:
             {"role": "user", "content": user_message},
         ]
         seen: dict = {}
+        blocked_streak = 0
+        stop_reason = "Tool budget exhausted. Summarize what you completed and what remains."
         for _ in range(self.max_tool_rounds if self.use_tools else 1):
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -257,6 +259,7 @@ class Agent:
                 tools=TOOL_SCHEMAS if self.use_tools else None,
             )
             msg = response.choices[0].message
+            batch_results = []
 
             if msg.tool_calls:
                 # Native tool-calling path.
@@ -268,37 +271,52 @@ class Agent:
                         args = {}
                     print(f"    [{self.name}] {call.function.name}({summarize_args(args)})")
                     result = self._execute(call.function.name, args, seen)
+                    batch_results.append(result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.id,
                         "content": result,
                     })
-                continue
+            else:
+                # Fallback path: the model may have written tool calls as JSON
+                # text in its reply instead of using the tool-calling API.
+                text_calls = parse_text_tool_calls(msg.content or "") if self.use_tools else []
+                if not text_calls:
+                    return msg.content or ""
+                if not self.warned_text_fallback:
+                    print(f"    [{self.name}] note: model emits tool calls as text; parsing them from the reply")
+                    self.warned_text_fallback = True
+                messages.append({"role": "assistant", "content": msg.content})
+                results = []
+                for name, args in text_calls:
+                    print(f"    [{self.name}] {name}({summarize_args(args)})")
+                    result = self._execute(name, args, seen)
+                    batch_results.append(result)
+                    results.append(f"Result of {name}:\n{result}")
+                messages.append({
+                    "role": "user",
+                    "content": "\n\n".join(results)
+                    + "\n\nContinue with the task. Call more tools if you need them; "
+                    "when you are finished, reply with your plain-text summary and no JSON.",
+                })
 
-            # Fallback path: the model may have written tool calls as JSON
-            # text in its reply instead of using the tool-calling API.
-            text_calls = parse_text_tool_calls(msg.content or "") if self.use_tools else []
-            if not text_calls:
-                return msg.content or ""
-            if not self.warned_text_fallback:
-                print(f"    [{self.name}] note: model emits tool calls as text; parsing them from the reply")
-                self.warned_text_fallback = True
-            messages.append({"role": "assistant", "content": msg.content})
-            results = []
-            for name, args in text_calls:
-                print(f"    [{self.name}] {name}({summarize_args(args)})")
-                results.append(f"Result of {name}:\n{self._execute(name, args, seen)}")
-            messages.append({
-                "role": "user",
-                "content": "\n\n".join(results)
-                + "\n\nContinue with the task. Call more tools if you need them; "
-                "when you are finished, reply with your plain-text summary and no JSON.",
-            })
-        # Tool budget exhausted: ask for a final answer without tools.
-        messages.append({
-            "role": "user",
-            "content": "Tool budget exhausted. Summarize what you completed and what remains.",
-        })
+            # An agent whose every call in two consecutive rounds was blocked
+            # for repetition is stuck; cut it off instead of paying for more
+            # generations that will repeat the same call.
+            if batch_results and all(r.startswith("REPEATED CALL BLOCKED") for r in batch_results):
+                blocked_streak += 1
+            else:
+                blocked_streak = 0
+            if blocked_streak >= 2:
+                print(f"    [{self.name}] agent kept repeating blocked calls; forcing final answer")
+                stop_reason = (
+                    "STOP. You repeated the same blocked calls again; no further tool "
+                    "calls will be executed. Write your final answer now, honestly "
+                    "stating what works and what still fails."
+                )
+                break
+        # Loop ended without a final answer: ask for one, without tools.
+        messages.append({"role": "user", "content": stop_reason})
         response = self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=self.temperature,
         )
@@ -417,19 +435,46 @@ def main():
 
         completed_summaries.append(f"Task {task['id']} ({task['title']}): {coder_summary.strip()[:300]}")
 
-    # ---- Test --------------------------------------------------------------
+    # ---- Test, then feed failures back to the coder ------------------------
     banner("TESTER")
     plan_text = json.dumps(tasks, indent=2)
-    test_report = agents["tester"].run(
+    tester_prompt = (
         f"Overall goal: {args.request}\n\nThe plan that was implemented:\n{plan_text}\n\n"
         f"Files in the workspace:\n{workspace.list_files()}"
     )
+    test_report = agents["tester"].run(tester_prompt)
     print(test_report)
+    passed = "RESULT: PASS" in test_report
+
+    max_fix_rounds = config["pipeline"].get("max_fix_rounds", 2)
+    for fix_round in range(1, max_fix_rounds + 1):
+        if passed:
+            break
+        banner(f"FIX ROUND {fix_round}: coder addresses the test failures")
+        fix_summary = agents["coder"].run(
+            f"Overall goal: {args.request}\n\n"
+            f"The tester ran the suite and it FAILED. Tester's report:\n{test_report}\n\n"
+            "Make the tests pass:\n"
+            "- If the code is wrong, fix the code.\n"
+            "- If a failing test is stale — it expects functions or names the "
+            "current code never exposed — rewrite that test against the current "
+            "public API instead of changing working code to satisfy it.\n"
+            "- Rerun the failing test command yourself and confirm it passes "
+            "before you finish."
+        )
+        print(f"  coder: {fix_summary.strip()[:500]}")
+        banner(f"RETEST after fix round {fix_round}")
+        test_report = agents["tester"].run(
+            tester_prompt
+            + "\n\nA previous test run failed and the coder has since pushed fixes. "
+            "Re-verify from scratch: rerun the suite before writing your report."
+        )
+        print(test_report)
+        passed = "RESULT: PASS" in test_report
 
     banner("DONE")
     print(f"Workspace: {workspace.root}")
     print(f"Files written this run: {len(workspace.written_files)}")
-    passed = "RESULT: PASS" in test_report
     print("Tests: PASS" if passed else "Tests: FAIL or inconclusive — read the report above.")
     sys.exit(0 if passed else 1)
 
