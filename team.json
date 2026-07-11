@@ -1,0 +1,38 @@
+{
+  "server": {
+    "base_url": "http://localhost:11434/v1",
+    "api_key": "ollama"
+  },
+  "agents": {
+    "planner": {
+      "model": "qwen2.5-coder:14b",
+      "prompt": "agents/planner.md",
+      "temperature": 0.3,
+      "tools": false
+    },
+    "coder": {
+      "model": "qwen2.5-coder:14b",
+      "prompt": "agents/coder.md",
+      "temperature": 0.2,
+      "tools": true,
+      "max_tool_rounds": 25
+    },
+    "reviewer": {
+      "model": "qwen2.5-coder:14b",
+      "prompt": "agents/reviewer.md",
+      "temperature": 0.1,
+      "tools": false
+    },
+    "tester": {
+      "model": "qwen2.5-coder:14b",
+      "prompt": "agents/tester.md",
+      "temperature": 0.2,
+      "tools": true,
+      "max_tool_rounds": 25
+    }
+  },
+  "pipeline": {
+    "max_review_rounds": 2,
+    "command_timeout_seconds": 120
+  }
+}
