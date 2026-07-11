@@ -470,6 +470,38 @@ def abort_blocked(blocked_line: str, workspace: "Workspace"):
     sys.exit(2)
 
 
+def run_challenging_blocked(agent: "Agent", prompt: str, workspace: "Workspace") -> str:
+    """Run an agent, but don't take the first BLOCKED for an answer.
+
+    Models reach for BLOCKED as an easy exit — e.g. declaring a missing NuGet
+    package a "missing tool" when 'dotnet add package' would fix it from
+    inside the workspace. Challenge once; abort only if the agent reconfirms.
+    """
+    reply = agent.run(prompt)
+    blocked = find_blocked(reply)
+    if not blocked:
+        return reply
+    print(f"  [{agent.name}] declared blocked; challenging once: {blocked[:120]}")
+    challenge = (
+        prompt
+        + f"\n\nIn a previous attempt you stopped with:\n{blocked}\n\n"
+        "Double-check before the whole run is aborted. BLOCKED is ONLY for "
+        "system-level tools — compilers, SDKs, CLI binaries — that would "
+        "require installing software on the machine. A missing LIBRARY or "
+        "PACKAGE is never a blocker: add it yourself inside the workspace "
+        "with the project's package manager, e.g. 'dotnet add package <Name>', "
+        "'npm install <name>' (project-local, no -g), '.venv/bin/pip install "
+        "<name>', or 'cargo add <name>'. If your blocker is really a package, "
+        "add it now and finish the task. Reply BLOCKED again only if a "
+        "genuine system tool is missing."
+    )
+    reply = agent.run(challenge)
+    blocked = find_blocked(reply)
+    if blocked:
+        abort_blocked(blocked, workspace)
+    return reply
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the local multi-agent coding team.")
     parser.add_argument("request", help="What you want built or changed.")
@@ -529,11 +561,8 @@ def main():
                     + json.dumps(feedback, indent=2)
                 )
             print(f"  -- coder (round {round_num + 1}) --")
-            coder_summary = agents["coder"].run(prompt)
+            coder_summary = run_challenging_blocked(agents["coder"], prompt, workspace)
             print(f"  coder: {coder_summary.strip()[:500]}")
-            blocked = find_blocked(coder_summary)
-            if blocked:
-                abort_blocked(blocked, workspace)
 
             changed = sorted(workspace.written_files)
             file_dump = "\n\n".join(
@@ -569,11 +598,8 @@ def main():
         f"Overall goal: {args.request}\n\nThe plan that was implemented:\n{plan_text}\n\n"
         f"Files in the workspace:\n{workspace.list_files()}"
     )
-    test_report = agents["tester"].run(tester_prompt)
+    test_report = run_challenging_blocked(agents["tester"], tester_prompt, workspace)
     print(test_report)
-    blocked = find_blocked(test_report)
-    if blocked:
-        abort_blocked(blocked, workspace)
     passed = "RESULT: PASS" in test_report
 
     max_fix_rounds = config["pipeline"].get("max_fix_rounds", 2)
@@ -581,7 +607,8 @@ def main():
         if passed:
             break
         banner(f"FIX ROUND {fix_round}: coder addresses the test failures")
-        fix_summary = agents["coder"].run(
+        fix_summary = run_challenging_blocked(
+            agents["coder"],
             f"Overall goal: {args.request}\n\n"
             f"The tester ran the suite and it FAILED. Tester's report:\n{test_report}\n\n"
             "Make the tests pass:\n"
@@ -590,22 +617,19 @@ def main():
             "current code never exposed — rewrite that test against the current "
             "public API instead of changing working code to satisfy it.\n"
             "- Rerun the failing test command yourself and confirm it passes "
-            "before you finish."
+            "before you finish.",
+            workspace,
         )
         print(f"  coder: {fix_summary.strip()[:500]}")
-        blocked = find_blocked(fix_summary)
-        if blocked:
-            abort_blocked(blocked, workspace)
         banner(f"RETEST after fix round {fix_round}")
-        test_report = agents["tester"].run(
+        test_report = run_challenging_blocked(
+            agents["tester"],
             tester_prompt
             + "\n\nA previous test run failed and the coder has since pushed fixes. "
-            "Re-verify from scratch: rerun the suite before writing your report."
+            "Re-verify from scratch: rerun the suite before writing your report.",
+            workspace,
         )
         print(test_report)
-        blocked = find_blocked(test_report)
-        if blocked:
-            abort_blocked(blocked, workspace)
         passed = "RESULT: PASS" in test_report
 
     banner("DONE")

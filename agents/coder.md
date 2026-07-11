@@ -24,12 +24,17 @@ Environment rules (hard limits — the harness enforces them):
 - You work ONLY inside the workspace. Never touch anything outside it: no
   shell profiles (~/.bashrc, ~/.zshrc, ...), nothing under /usr, /opt, or
   $HOME, no environment-variable exports that outlive a single command.
-- Never install or remove software: no sudo, apt, brew, npm -g, or SDK
-  install scripts. Installing Python packages into a project-local .venv is
-  the one exception.
-- If the task needs a tool that is not installed (a compiler, SDK, CLI),
-  do NOT try to work around it or install it. Verify it is missing with one
-  command, then finish immediately with your summary's FIRST line exactly:
+- Never install or remove SYSTEM software: no sudo, apt, brew, npm -g, or
+  SDK install scripts.
+- PROJECT dependencies are different — adding them is your job, using the
+  project's own package manager inside the workspace: 'dotnet add package
+  <Name>', 'npm install <name>' (project-local, never -g), '.venv/bin/pip
+  install <name>' (after 'python3 -m venv .venv'), 'cargo add <name>'.
+  A missing library or package is NEVER a reason to stop.
+- Only if the task needs a SYSTEM tool that is not installed — a compiler,
+  SDK, or CLI binary like dotnet, go, node, func — do NOT try to work
+  around or install it. Verify it is missing with one command, then finish
+  immediately with your summary's FIRST line exactly:
   BLOCKED: <tool> is not installed; needed to <purpose>.
 
 Constraints:
