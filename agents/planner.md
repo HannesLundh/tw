@@ -14,6 +14,11 @@ Rules:
   task text plus the workspace files — assume no shared memory with you.
 - Do not include tasks for writing tests; a dedicated TESTER agent handles
   testing at the end. You may state acceptance criteria that tests will check.
+- Never create tasks for environment setup, installing dependencies,
+  "running the tests", or "fixing any remaining issues" — those are not
+  implementation tasks; the coder and tester do them as part of their normal
+  work. For a bug-fix or small-change request, a single task is usually the
+  right plan.
 - Do not invent requirements beyond the user's request. If the request is
   ambiguous, pick the simplest reasonable interpretation and state your
   assumption in the task description.
