@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -88,6 +89,15 @@ PLACEHOLDER_RE = re.compile(r"^<[^<>\n]{0,120}>$")
 # A blocked agent once ran sudo/apt/brew/npm -g in a loop, appended PATH
 # exports to four different shell profiles, and deleted /opt/homebrew/bin/func
 # trying to conjure a missing SDK. Agents must report BLOCKED instead.
+# Toolchain binaries worth verifying deterministically. Preflight checks the
+# ones named in the request before any LLM call, and a BLOCKED claim about
+# one of these is fact-checked against PATH instead of taken on faith.
+TOOLCHAIN_BINARIES = [
+    "dotnet", "func", "node", "npm", "npx", "deno", "bun", "go", "cargo",
+    "rustc", "java", "javac", "mvn", "gradle", "kotlin", "swift", "ruby",
+    "php", "docker", "kubectl", "terraform", "make", "cmake", "gcc", "clang",
+]
+
 FORBIDDEN_COMMANDS = [
     (r"\bsudo\b", "sudo"),
     (r"\bapt(-get)?\b", "apt package management"),
@@ -336,7 +346,18 @@ class Agent:
                 "genuinely different action or stop and write your final summary, "
                 "honestly stating what still fails."
             )
-        return self.workspace.dispatch(name, args)
+        result = self.workspace.dispatch(name, args)
+        if name == "run_command":
+            # Surface failures on the console so the human can see what
+            # actually broke instead of trusting the agent's diagnosis.
+            code = re.match(r"exit code: (\d+)", result)
+            if code and code.group(1) != "0":
+                detail = re.search(r"stderr:\n(.+)", result) or re.search(r"stdout:\n(.+)", result)
+                print(f"    [{self.name}] ! exit {code.group(1)}: "
+                      f"{detail.group(1).strip()[:150] if detail else '(no output)'}")
+            elif result.startswith("ERROR: command killed"):
+                print(f"    [{self.name}] ! command timed out")
+        return result
 
     def run(self, user_message: str) -> str:
         """One fresh conversation: system prompt + task, tool loop if enabled."""
@@ -450,6 +471,27 @@ def banner(text: str):
     print(f"\n{'=' * 70}\n{text}\n{'=' * 70}")
 
 
+def preflight_tools(request: str):
+    """Check toolchain binaries named in the request against PATH, before
+    burning any model time. Returns ({tool: path}, [missing])."""
+    mentioned = [
+        t for t in TOOLCHAIN_BINARIES
+        if re.search(rf"(?<![\w./-]){re.escape(t)}(?![\w-])", request)
+    ]
+    found, missing = {}, []
+    for tool in mentioned:
+        path = shutil.which(tool)
+        (found.update({tool: path}) if path else missing.append(tool))
+    return found, missing
+
+
+def installed_tools_in(text: str) -> dict:
+    """Toolchain binaries mentioned in a BLOCKED claim that actually exist."""
+    tokens = set(re.findall(r"[A-Za-z0-9_.+-]+", text))
+    return {t: shutil.which(t) for t in TOOLCHAIN_BINARIES
+            if t in tokens and shutil.which(t)}
+
+
 def find_blocked(text: str):
     """Return the BLOCKED: line if an agent declared the task blocked."""
     for line in text.strip().splitlines()[:5]:
@@ -482,22 +524,45 @@ def run_challenging_blocked(agent: "Agent", prompt: str, workspace: "Workspace")
     if not blocked:
         return reply
     print(f"  [{agent.name}] declared blocked; challenging once: {blocked[:120]}")
-    challenge = (
-        prompt
-        + f"\n\nIn a previous attempt you stopped with:\n{blocked}\n\n"
-        "Double-check before the whole run is aborted. BLOCKED is ONLY for "
-        "system-level tools — compilers, SDKs, CLI binaries — that would "
-        "require installing software on the machine. A missing LIBRARY or "
-        "PACKAGE is never a blocker: add it yourself inside the workspace "
-        "with the project's package manager, e.g. 'dotnet add package <Name>', "
-        "'npm install <name>' (project-local, no -g), '.venv/bin/pip install "
-        "<name>', or 'cargo add <name>'. If your blocker is really a package, "
-        "add it now and finish the task. Reply BLOCKED again only if a "
-        "genuine system tool is missing."
-    )
+
+    actually_installed = installed_tools_in(blocked)
+    if actually_installed:
+        evidence = "; ".join(f"'{t}' IS installed at {p}"
+                             for t, p in actually_installed.items())
+        challenge = (
+            prompt
+            + f"\n\nIn a previous attempt you stopped with:\n{blocked}\n\n"
+            f"That diagnosis is FALSE: {evidence} (verified on PATH just now). "
+            "Your command failed for a different reason. Rerun the failing "
+            "command, read its actual stdout/stderr, and fix the real problem "
+            "— a compile error, a broken project file, a wrong flag. Do not "
+            "claim a tool is missing when it is installed."
+        )
+    else:
+        challenge = (
+            prompt
+            + f"\n\nIn a previous attempt you stopped with:\n{blocked}\n\n"
+            "Double-check before the whole run is aborted. BLOCKED is ONLY for "
+            "system-level tools — compilers, SDKs, CLI binaries — that would "
+            "require installing software on the machine. A missing LIBRARY or "
+            "PACKAGE is never a blocker: add it yourself inside the workspace "
+            "with the project's package manager, e.g. 'dotnet add package <Name>', "
+            "'npm install <name>' (project-local, no -g), '.venv/bin/pip install "
+            "<name>', or 'cargo add <name>'. If your blocker is really a package, "
+            "add it now and finish the task. Reply BLOCKED again only if a "
+            "genuine system tool is missing."
+        )
     reply = agent.run(challenge)
     blocked = find_blocked(reply)
     if blocked:
+        contradicted = installed_tools_in(blocked)
+        if contradicted:
+            print(
+                "\nNOTE: the agent insists a tool is missing, but PATH says otherwise:\n  "
+                + "\n  ".join(f"{t} -> {p}" for t, p in contradicted.items())
+                + "\nThe real failure is something else. Reproduce it yourself:\n"
+                f"  cd {workspace.root} && <the failing command>"
+            )
         abort_blocked(blocked, workspace)
     return reply
 
@@ -513,6 +578,23 @@ def main():
     workspace_dir = Path(args.workspace).expanduser()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     workspace = Workspace(workspace_dir, config["pipeline"].get("command_timeout_seconds", 120))
+
+    # Deterministic environment check before any model time is spent: if the
+    # request names a toolchain binary, it must exist on THIS process's PATH
+    # (which is what every agent command will inherit).
+    found, missing = preflight_tools(args.request)
+    if found:
+        print("Preflight: " + ", ".join(f"{t} -> {p}" for t, p in found.items()))
+    if missing:
+        banner("PREFLIGHT FAILED")
+        print("Tool(s) named in your request were not found on PATH:")
+        for tool in missing:
+            print(f"  - {tool}")
+        print(
+            "\nAgents inherit this terminal's environment, so they will hit the "
+            "same wall.\nInstall the missing tool(s) or fix PATH, then rerun."
+        )
+        sys.exit(2)
 
     client = OpenAI(
         base_url=config["server"]["base_url"],
