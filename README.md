@@ -98,6 +98,13 @@ Full details, memory math, and tuning: **[docs/models.md](docs/models.md)**.
 - **"Files written this run: 0" with lots of reviewer rejections** was the
   symptom of the above before the fallback existed — update to the latest
   version of this repo.
+- **A run seems frozen for minutes.** Check the last printed line. If it's a
+  `run_command(...)`, the command itself is running — it gets hard-killed
+  (whole process group) at the configured timeout, 120 s by default. If it's
+  a coder/tester line with no tool call, the model is generating: on long
+  contexts a 14B model can take ~1 min before the first token, which is
+  normal. Minutes of true silence after that usually means swapping — see
+  below.
 - **Everything is slow / the Mac is swapping:** see the memory section of
   [docs/models.md](docs/models.md); the usual causes are context set too
   high or a second big model loaded.
