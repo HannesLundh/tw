@@ -87,6 +87,21 @@ Full details, memory math, and tuning: **[docs/models.md](docs/models.md)**.
   Continue, or any framework that accepts a system prompt. The orchestrator
   here is deliberately framework-free so you can read all of it.
 
+## Troubleshooting
+
+- **The coder prints JSON like `{"name": "write_file", ...}` instead of
+  editing files.** Local models frequently emit tool calls as plain text
+  instead of using the tool-calling API. The orchestrator detects this and
+  executes those calls anyway (you'll see a one-line note per agent). If it
+  happens constantly, try `devstral:24b`, which is trained for native tool
+  use, and make sure Ollama is current (`brew upgrade ollama`).
+- **"Files written this run: 0" with lots of reviewer rejections** was the
+  symptom of the above before the fallback existed — update to the latest
+  version of this repo.
+- **Everything is slow / the Mac is swapping:** see the memory section of
+  [docs/models.md](docs/models.md); the usual causes are context set too
+  high or a second big model loaded.
+
 ## Safety note
 
 The coder and tester agents can write files and run shell commands **inside
