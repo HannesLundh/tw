@@ -105,6 +105,12 @@ Full details, memory math, and tuning: **[docs/models.md](docs/models.md)**.
   contexts a 14B model can take ~1 min before the first token, which is
   normal. Minutes of true silence after that usually means swapping — see
   below.
+- **An agent overwrote a file with placeholder text** like
+  `<updated-content-of-file.py>`. Such writes are now rejected before they
+  touch disk, Python files are syntax-checked on every write, and the
+  pre-run original of any overwritten file is kept in
+  `<workspace>/.agent-backups/` — restore with
+  `cp .agent-backups/path/to/file path/to/file`.
 - **Everything is slow / the Mac is swapping:** see the memory section of
   [docs/models.md](docs/models.md); the usual causes are context set too
   high or a second big model loaded.

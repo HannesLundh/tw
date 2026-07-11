@@ -76,7 +76,13 @@ TOOL_SCHEMAS = [
     },
 ]
 
-IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache"}
+IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache",
+                ".agent-backups"}
+
+# An entire file body that is just a bracketed token, e.g.
+# "<updated-content-of-todo_manager.py>". Local models emit these instead of
+# real content and would silently destroy working files.
+PLACEHOLDER_RE = re.compile(r"^<[^<>\n]{0,120}>$")
 
 KNOWN_TOOLS = {"list_files", "read_file", "write_file", "run_command"}
 
@@ -150,10 +156,45 @@ class Workspace:
 
     def write_file(self, path: str, content: str) -> str:
         target = self._resolve(path)
+
+        # Refuse placeholder bodies outright: they would replace a working
+        # file with garbage, and the resulting "syntax error on line 1" sends
+        # every later agent down a rabbit hole.
+        stripped = content.strip()
+        if PLACEHOLDER_RE.match(stripped) or (
+            len(stripped) < 200 and "placeholder" in stripped.lower()
+        ):
+            return (
+                f"ERROR: refused to write {path}: the content you sent is a "
+                f"placeholder ({stripped[:80]!r}), not real file content. "
+                "write_file replaces the ENTIRE file — resend the call with the "
+                "complete, literal content of the file."
+            )
+
+        # Keep the pre-run original of any file we overwrite, so a bad write
+        # never destroys the only copy.
+        if target.is_file():
+            backup = self.root / ".agent-backups" / path
+            if not backup.exists():
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                backup.write_text(target.read_text(errors="replace"))
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         self.written_files.add(path)
-        return f"wrote {len(content)} chars to {path}"
+        result = f"wrote {len(content)} chars to {path}"
+
+        # Instant feedback beats discovering a broken file three tool calls
+        # later via a confusing pytest collection error.
+        if target.suffix == ".py":
+            try:
+                compile(content, path, "exec")
+            except SyntaxError as exc:
+                result += (
+                    f"\nWARNING: the file was written but is NOT valid Python — "
+                    f"line {exc.lineno}: {exc.msg}. Fix it before running anything."
+                )
+        return result
 
     def run_command(self, command: str) -> str:
         # Run in a fresh process group with stdin closed. On timeout, kill the
