@@ -121,3 +121,27 @@ The coder and tester agents can write files and run shell commands **inside
 the workspace directory you pass with `--workspace`**. Point them at a scratch
 directory or a git repo with a clean tree, and review diffs before trusting
 output — local 14B models are good, but they are not infallible.
+
+Guardrails enforced by the orchestrator:
+
+- **No system modification.** Commands using sudo/apt/brew/npm -g, SDK
+  install scripts, redirects into `$HOME` or system paths, or rm/mv/chmod
+  outside the workspace are refused before they run. `pip install` is only
+  allowed into a project-local `.venv`.
+- **Missing tools end the run instead of derailing it.** If a task needs a
+  compiler or CLI that isn't installed, the agent reports
+  `BLOCKED: <tool> is not installed` and the run exits (code 2) with a
+  message telling you what to install — no agent will try to "fix" your
+  machine. Install the prerequisite (e.g. `brew install dotnet-sdk`
+  yourself) and rerun.
+- **Placeholder writes are refused**, Python files are syntax-checked on
+  write, and pre-run originals of overwritten files are kept in
+  `<workspace>/.agent-backups/`.
+- **Runaway sessions are bounded**: shell commands are killed (whole process
+  group) at a hard timeout, repeated identical tool calls are blocked, an
+  agent that keeps hitting blocks is forced to wrap up, old tool output is
+  trimmed once a conversation outgrows the context window, and LLM requests
+  time out after 5 minutes instead of waiting forever.
+
+The guardrails are pattern-based, not a sandbox — a determined shell command
+can still slip through, so keep workspaces disposable.

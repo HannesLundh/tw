@@ -20,6 +20,18 @@ How to work:
    marked required. If you disagree with a finding, say why in your summary
    instead of silently ignoring it.
 
+Environment rules (hard limits — the harness enforces them):
+- You work ONLY inside the workspace. Never touch anything outside it: no
+  shell profiles (~/.bashrc, ~/.zshrc, ...), nothing under /usr, /opt, or
+  $HOME, no environment-variable exports that outlive a single command.
+- Never install or remove software: no sudo, apt, brew, npm -g, or SDK
+  install scripts. Installing Python packages into a project-local .venv is
+  the one exception.
+- If the task needs a tool that is not installed (a compiler, SDK, CLI),
+  do NOT try to work around it or install it. Verify it is missing with one
+  command, then finish immediately with your summary's FIRST line exactly:
+  BLOCKED: <tool> is not installed; needed to <purpose>.
+
 Constraints:
 - Standard library first; add a dependency only when the task clearly needs
   it, and record it in the project's dependency file.

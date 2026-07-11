@@ -84,6 +84,25 @@ IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest
 # real content and would silently destroy working files.
 PLACEHOLDER_RE = re.compile(r"^<[^<>\n]{0,120}>$")
 
+# Commands that install software or modify the machine outside the workspace.
+# A blocked agent once ran sudo/apt/brew/npm -g in a loop, appended PATH
+# exports to four different shell profiles, and deleted /opt/homebrew/bin/func
+# trying to conjure a missing SDK. Agents must report BLOCKED instead.
+FORBIDDEN_COMMANDS = [
+    (r"\bsudo\b", "sudo"),
+    (r"\bapt(-get)?\b", "apt package management"),
+    (r"\bbrew\s+(install|reinstall|uninstall|remove|link|unlink|tap|upgrade)\b",
+     "brew package management"),
+    (r"\bnpm\b.*\s(-g|--global)\b", "global npm installs"),
+    (r">\s*['\"]?(~|\$HOME|/(?!tmp/|dev/null))", "redirecting output outside the workspace"),
+    (r"\b(rm|mv|cp|chmod|chown|ln|touch|mkdir)\b[^|;&>]*\s+['\"]?(~|\$HOME|/(?!tmp/|dev/null))",
+     "modifying paths outside the workspace"),
+    (r"\b(curl|wget)\b[^|]*\|[^|]*\b(sh|bash|zsh)\b", "piping a download into a shell"),
+    (r"dotnet-install\.(sh|ps1)|rustup\.rs|get-pip\.py|nodesource\.com",
+     "running an SDK installer"),
+    (r"\bunzip\b.*-d\s+['\"]?/", "extracting into a system path"),
+]
+
 KNOWN_TOOLS = {"list_files", "read_file", "write_file", "run_command"}
 
 
@@ -197,6 +216,21 @@ class Workspace:
         return result
 
     def run_command(self, command: str) -> str:
+        for pattern, reason in FORBIDDEN_COMMANDS:
+            if re.search(pattern, command):
+                return (
+                    f"BLOCKED COMMAND ({reason}). Agents may not install software "
+                    "or modify anything outside the workspace. If this task needs "
+                    "a tool that is not installed, stop working and make the FIRST "
+                    "line of your final summary: BLOCKED: <what is missing>."
+                )
+        if re.search(r"\bpip3?\s+install\b|-m\s+pip\s+install\b", command) and ".venv" not in command:
+            return (
+                "BLOCKED COMMAND (installing into the system Python). Create a "
+                "project venv first (python3 -m venv .venv) and use "
+                ".venv/bin/pip install — or report BLOCKED if that can't work."
+            )
+
         # Run in a fresh process group with stdin closed. On timeout, kill the
         # WHOLE group: subprocess.run's own timeout only kills the shell, and
         # surviving children (pytest, a launched app) keep the output pipes
@@ -263,9 +297,30 @@ class Agent:
         self.use_tools = spec.get("tools", False)
         self.max_tool_rounds = spec.get("max_tool_rounds", 25)
         self.system_prompt = (REPO_ROOT / spec["prompt"]).read_text()
+        self.max_context_chars = spec.get("max_context_chars", 60_000)
         self.client = client
         self.workspace = workspace
         self.warned_text_fallback = False
+
+    def _shrink(self, messages: list) -> None:
+        """Trim old tool output once the conversation outgrows the model's
+        context. Without this, a long tool session makes every subsequent
+        request slower (minutes of prompt processing on a 14B) and eventually
+        pushes the task itself out of the window."""
+        def total() -> int:
+            return sum(len(str(m.get("content") or ""))
+                       for m in messages if isinstance(m, dict))
+        if total() <= self.max_context_chars:
+            return
+        # Never touch the system prompt, the task, or the last few exchanges.
+        for m in messages[2:-4]:
+            if not isinstance(m, dict):
+                continue
+            content = str(m.get("content") or "")
+            if m.get("role") in ("tool", "user") and len(content) > 600:
+                m["content"] = content[:500] + "\n[... older output trimmed ...]"
+                if total() <= self.max_context_chars:
+                    break
 
     def _execute(self, name: str, args: dict, seen: dict) -> str:
         """Dispatch a tool call, short-circuiting pathological repetition.
@@ -291,8 +346,10 @@ class Agent:
         ]
         seen: dict = {}
         blocked_streak = 0
+        total_blocked = 0
         stop_reason = "Tool budget exhausted. Summarize what you completed and what remains."
         for _ in range(self.max_tool_rounds if self.use_tools else 1):
+            self._shrink(messages)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -342,18 +399,22 @@ class Agent:
                 })
 
             # An agent whose every call in two consecutive rounds was blocked
-            # for repetition is stuck; cut it off instead of paying for more
-            # generations that will repeat the same call.
-            if batch_results and all(r.startswith("REPEATED CALL BLOCKED") for r in batch_results):
+            # for repetition is stuck; so is one that keeps rotating through
+            # blocked/forbidden calls (which resets the streak but goes
+            # nowhere). Cut both off instead of paying for more generations.
+            is_blocked = lambda r: r.startswith(("REPEATED CALL BLOCKED", "BLOCKED COMMAND"))
+            total_blocked += sum(1 for r in batch_results if is_blocked(r))
+            if batch_results and all(is_blocked(r) for r in batch_results):
                 blocked_streak += 1
             else:
                 blocked_streak = 0
-            if blocked_streak >= 2:
-                print(f"    [{self.name}] agent kept repeating blocked calls; forcing final answer")
+            if blocked_streak >= 2 or total_blocked >= 8:
+                print(f"    [{self.name}] agent keeps hitting blocked calls; forcing final answer")
                 stop_reason = (
-                    "STOP. You repeated the same blocked calls again; no further tool "
-                    "calls will be executed. Write your final answer now, honestly "
-                    "stating what works and what still fails."
+                    "STOP. Your calls keep being blocked; no further tool calls "
+                    "will be executed. Write your final answer now, honestly "
+                    "stating what works and what still fails. If you were blocked "
+                    "by a missing tool, make the FIRST line: BLOCKED: <what is missing>."
                 )
                 break
         # Loop ended without a final answer: ask for one, without tools.
@@ -389,6 +450,26 @@ def banner(text: str):
     print(f"\n{'=' * 70}\n{text}\n{'=' * 70}")
 
 
+def find_blocked(text: str):
+    """Return the BLOCKED: line if an agent declared the task blocked."""
+    for line in text.strip().splitlines()[:5]:
+        if line.strip().lstrip("*# ").startswith("BLOCKED:"):
+            return line.strip().lstrip("*# ")
+    return None
+
+
+def abort_blocked(blocked_line: str, workspace: "Workspace"):
+    banner("RUN BLOCKED")
+    print(blocked_line)
+    print(
+        "\nThe team cannot finish this on the current machine — agents are not\n"
+        "allowed to install software or modify anything outside the workspace.\n"
+        "Install what's missing yourself, then rerun the same request."
+    )
+    print(f"Workspace: {workspace.root}")
+    sys.exit(2)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the local multi-agent coding team.")
     parser.add_argument("request", help="What you want built or changed.")
@@ -404,6 +485,8 @@ def main():
     client = OpenAI(
         base_url=config["server"]["base_url"],
         api_key=config["server"].get("api_key", "local"),
+        timeout=config["server"].get("request_timeout_seconds", 300),
+        max_retries=1,
     )
     agents = {
         name: Agent(name, spec, client, workspace)
@@ -448,6 +531,9 @@ def main():
             print(f"  -- coder (round {round_num + 1}) --")
             coder_summary = agents["coder"].run(prompt)
             print(f"  coder: {coder_summary.strip()[:500]}")
+            blocked = find_blocked(coder_summary)
+            if blocked:
+                abort_blocked(blocked, workspace)
 
             changed = sorted(workspace.written_files)
             file_dump = "\n\n".join(
@@ -485,6 +571,9 @@ def main():
     )
     test_report = agents["tester"].run(tester_prompt)
     print(test_report)
+    blocked = find_blocked(test_report)
+    if blocked:
+        abort_blocked(blocked, workspace)
     passed = "RESULT: PASS" in test_report
 
     max_fix_rounds = config["pipeline"].get("max_fix_rounds", 2)
@@ -504,6 +593,9 @@ def main():
             "before you finish."
         )
         print(f"  coder: {fix_summary.strip()[:500]}")
+        blocked = find_blocked(fix_summary)
+        if blocked:
+            abort_blocked(blocked, workspace)
         banner(f"RETEST after fix round {fix_round}")
         test_report = agents["tester"].run(
             tester_prompt
@@ -511,6 +603,9 @@ def main():
             "Re-verify from scratch: rerun the suite before writing your report."
         )
         print(test_report)
+        blocked = find_blocked(test_report)
+        if blocked:
+            abort_blocked(blocked, workspace)
         passed = "RESULT: PASS" in test_report
 
     banner("DONE")

@@ -1,7 +1,8 @@
 {
   "server": {
     "base_url": "http://localhost:11434/v1",
-    "api_key": "ollama"
+    "api_key": "ollama",
+    "request_timeout_seconds": 300
   },
   "agents": {
     "planner": {

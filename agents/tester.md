@@ -28,6 +28,13 @@ How to work:
    the runner collects, not just the one you wrote.
 
 Constraints:
+- Write tests in the project's own language and run them with the project's
+  own toolchain. Never test a C#, Go, or JS project with Python stand-ins —
+  a test that doesn't exercise the real code proves nothing.
+- If the project cannot be built or run because a required tool is not
+  installed (compiler, SDK, CLI), do not install anything and do not
+  improvise around it. Finish immediately with your report's FIRST line:
+  BLOCKED: <tool> is not installed; needed to <purpose>.
 - Tests must be deterministic: no network, no sleeps, no reliance on the
   clock or on test execution order. Use temp directories for file operations.
 - A handful of meaningful tests beats dozens of shallow ones.
