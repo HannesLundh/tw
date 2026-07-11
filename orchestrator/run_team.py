@@ -11,7 +11,9 @@ Usage:
 
 import argparse
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -154,18 +156,45 @@ class Workspace:
         return f"wrote {len(content)} chars to {path}"
 
     def run_command(self, command: str) -> str:
+        # Run in a fresh process group with stdin closed. On timeout, kill the
+        # WHOLE group: subprocess.run's own timeout only kills the shell, and
+        # surviving children (pytest, a launched app) keep the output pipes
+        # open, hanging the orchestrator forever.
+        proc = subprocess.Popen(
+            command, shell=True, cwd=self.root, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
         try:
-            proc = subprocess.run(
-                command, shell=True, cwd=self.root, capture_output=True,
-                text=True, timeout=self.command_timeout,
-            )
+            stdout, stderr = proc.communicate(timeout=self.command_timeout)
+            header = f"exit code: {proc.returncode}"
         except subprocess.TimeoutExpired:
-            return f"ERROR: command timed out after {self.command_timeout}s"
-        out = f"exit code: {proc.returncode}\n"
-        if proc.stdout:
-            out += f"stdout:\n{proc.stdout[-8000:]}\n"
-        if proc.stderr:
-            out += f"stderr:\n{proc.stderr[-8000:]}\n"
+            try:
+                # start_new_session makes the group id == proc.pid; killing by
+                # that id works even if the shell itself already exited and
+                # only orphaned children remain in the group.
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Something survived the kill and is holding the pipes open;
+                # abandon the output rather than hang the orchestrator.
+                for stream in (proc.stdout, proc.stderr):
+                    if stream:
+                        stream.close()
+                stdout, stderr = "", ""
+            header = (
+                f"ERROR: command killed after {self.command_timeout}s timeout. "
+                "It may hang or wait for input (there is none: stdin is closed). "
+                "Do NOT rerun it unchanged — fix the command or the code instead."
+            )
+        out = header + "\n"
+        if stdout:
+            out += f"stdout:\n{stdout[-8000:]}\n"
+        if stderr:
+            out += f"stderr:\n{stderr[-8000:]}\n"
         return out
 
     def dispatch(self, name: str, args: dict) -> str:
@@ -197,12 +226,29 @@ class Agent:
         self.workspace = workspace
         self.warned_text_fallback = False
 
+    def _execute(self, name: str, args: dict, seen: dict) -> str:
+        """Dispatch a tool call, short-circuiting pathological repetition.
+        Rerunning tests after an edit is normal; making the exact same call a
+        4th time means the agent is looping and needs a shove, not a result."""
+        signature = name + json.dumps(args, sort_keys=True)
+        seen[signature] = seen.get(signature, 0) + 1
+        if seen[signature] > 3:
+            print(f"    [{self.name}] blocked repeated call: {name}")
+            return (
+                f"REPEATED CALL BLOCKED: you already made this exact {name} call "
+                "3 times. Repeating it will not change the outcome. Either take a "
+                "genuinely different action or stop and write your final summary, "
+                "honestly stating what still fails."
+            )
+        return self.workspace.dispatch(name, args)
+
     def run(self, user_message: str) -> str:
         """One fresh conversation: system prompt + task, tool loop if enabled."""
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message},
         ]
+        seen: dict = {}
         for _ in range(self.max_tool_rounds if self.use_tools else 1):
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -221,7 +267,7 @@ class Agent:
                     except json.JSONDecodeError:
                         args = {}
                     print(f"    [{self.name}] {call.function.name}({summarize_args(args)})")
-                    result = self.workspace.dispatch(call.function.name, args)
+                    result = self._execute(call.function.name, args, seen)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call.id,
@@ -241,7 +287,7 @@ class Agent:
             results = []
             for name, args in text_calls:
                 print(f"    [{self.name}] {name}({summarize_args(args)})")
-                results.append(f"Result of {name}:\n{self.workspace.dispatch(name, args)}")
+                results.append(f"Result of {name}:\n{self._execute(name, args, seen)}")
             messages.append({
                 "role": "user",
                 "content": "\n\n".join(results)

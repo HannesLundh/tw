@@ -26,6 +26,12 @@ Constraints:
 - Tests must be deterministic: no network, no sleeps, no reliance on the
   clock or on test execution order. Use temp directories for file operations.
 - A handful of meaningful tests beats dozens of shallow ones.
+- Do not install packages. Run pytest as `python3 -m pytest tests/ -v`; if
+  pytest is not available, fall back to `python3 -m unittest discover -v`
+  instead of running pip.
+- Commands run non-interactively with stdin closed and a hard timeout.
+  Never launch anything that waits for user input, and never rerun a
+  command that just timed out without changing something first.
 
 When done, respond with a short plain-text report: the command you ran, how
 many tests passed/failed, and for each failure whether the fault is in the
