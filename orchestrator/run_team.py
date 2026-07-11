@@ -76,6 +76,43 @@ TOOL_SCHEMAS = [
 
 IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest_cache"}
 
+KNOWN_TOOLS = {"list_files", "read_file", "write_file", "run_command"}
+
+
+def parse_text_tool_calls(text: str) -> list[tuple[str, dict]]:
+    """Extract tool calls a model printed as JSON text instead of using the
+    native tool-calling API. Local models do this constantly, even when their
+    chat template supports function calling — without this fallback the call
+    would be mistaken for a final answer and silently dropped.
+
+    Recognizes {"name": ..., "arguments": {...}} objects (also "parameters",
+    or nested under "function"), anywhere in the reply, fenced or not.
+    """
+    calls = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while (brace := text.find("{", idx)) != -1:
+        try:
+            obj, consumed = decoder.raw_decode(text[brace:])
+        except json.JSONDecodeError:
+            idx = brace + 1
+            continue
+        idx = brace + consumed
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("function"), dict):
+            obj = obj["function"]
+        name = obj.get("name") or obj.get("tool")
+        args = obj.get("arguments", obj.get("parameters", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                continue
+        if name in KNOWN_TOOLS and isinstance(args, dict):
+            calls.append((name, args))
+    return calls
+
 
 class Workspace:
     """File and shell access confined to one directory."""
@@ -158,6 +195,7 @@ class Agent:
         self.system_prompt = (REPO_ROOT / spec["prompt"]).read_text()
         self.client = client
         self.workspace = workspace
+        self.warned_text_fallback = False
 
     def run(self, user_message: str) -> str:
         """One fresh conversation: system prompt + task, tool loop if enabled."""
@@ -173,21 +211,43 @@ class Agent:
                 tools=TOOL_SCHEMAS if self.use_tools else None,
             )
             msg = response.choices[0].message
-            if not msg.tool_calls:
+
+            if msg.tool_calls:
+                # Native tool-calling path.
+                messages.append(msg)
+                for call in msg.tool_calls:
+                    try:
+                        args = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    print(f"    [{self.name}] {call.function.name}({summarize_args(args)})")
+                    result = self.workspace.dispatch(call.function.name, args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": result,
+                    })
+                continue
+
+            # Fallback path: the model may have written tool calls as JSON
+            # text in its reply instead of using the tool-calling API.
+            text_calls = parse_text_tool_calls(msg.content or "") if self.use_tools else []
+            if not text_calls:
                 return msg.content or ""
-            messages.append(msg)
-            for call in msg.tool_calls:
-                try:
-                    args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                print(f"    [{self.name}] {call.function.name}({summarize_args(args)})")
-                result = self.workspace.dispatch(call.function.name, args)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": result,
-                })
+            if not self.warned_text_fallback:
+                print(f"    [{self.name}] note: model emits tool calls as text; parsing them from the reply")
+                self.warned_text_fallback = True
+            messages.append({"role": "assistant", "content": msg.content})
+            results = []
+            for name, args in text_calls:
+                print(f"    [{self.name}] {name}({summarize_args(args)})")
+                results.append(f"Result of {name}:\n{self.workspace.dispatch(name, args)}")
+            messages.append({
+                "role": "user",
+                "content": "\n\n".join(results)
+                + "\n\nContinue with the task. Call more tools if you need them; "
+                "when you are finished, reply with your plain-text summary and no JSON.",
+            })
         # Tool budget exhausted: ask for a final answer without tools.
         messages.append({
             "role": "user",

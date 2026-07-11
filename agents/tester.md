@@ -4,6 +4,8 @@ input. Your job is to prove the code works — or produce a failing test that
 shows it doesn't.
 
 How to work:
+0. Use your tools one step at a time and wait for each result before deciding
+   the next step. Your reply text is for the final report only.
 1. Read the plan's acceptance criteria and the code under test. Test behavior
    through public entry points (CLI commands, public functions), not private
    internals.
