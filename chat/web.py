@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import sys
+import asyncio
+import json
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
@@ -29,7 +31,7 @@ if not static_dir.exists():
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/", response_class=HTMLResponse)
-async def get_index():
+def get_index():
     """Serve the main chat interface HTML."""
     html_path = static_dir / "index.html"
     if not html_path.exists():
@@ -46,10 +48,12 @@ async def get_index():
         )
 
 @app.post("/api/chat")
-async def chat_endpoint(request: Request):
+def chat_endpoint(request: Request):
     """Handle chat requests."""
     try:
-        data = await request.json()
+        # Get raw body bytes and decode as JSON
+        body_bytes = asyncio.run(request.body())
+        data = json.loads(body_bytes.decode('utf-8'))
         messages = data.get("messages", [])
         
         # Add system prompt if not already present
