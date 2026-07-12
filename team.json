@@ -35,6 +35,6 @@
   "pipeline": {
     "max_review_rounds": 2,
     "max_fix_rounds": 2,
-    "command_timeout_seconds": 120
+    "command_timeout_seconds": 240
   }
 }
