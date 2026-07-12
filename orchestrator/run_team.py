@@ -498,10 +498,13 @@ def preflight_tools(request: str):
 
 
 def installed_tools_in(text: str) -> dict:
-    """Toolchain binaries mentioned in a BLOCKED claim that actually exist."""
-    tokens = set(re.findall(r"[A-Za-z0-9_.+-]+", text))
-    return {t: shutil.which(t) for t in TOOLCHAIN_BINARIES
-            if t in tokens and shutil.which(t)}
+    """Toolchain binaries mentioned in a BLOCKED claim that actually exist.
+    Matches inside hyphenated compounds too — a claim about a phantom
+    'dotnet-isolated runtime' is really a claim about dotnet."""
+    return {
+        t: shutil.which(t) for t in TOOLCHAIN_BINARIES
+        if re.search(rf"(?<![\w.]){re.escape(t)}(?!\w)", text) and shutil.which(t)
+    }
 
 
 def find_blocked(text: str):
@@ -561,7 +564,10 @@ def run_challenging_blocked(agent: "Agent", prompt: str, workspace: "Workspace")
             "with the project's package manager, e.g. 'dotnet add package <Name>', "
             "'npm install <name>' (project-local, no -g), '.venv/bin/pip install "
             "<name>', or 'cargo add <name>'. If your blocker is really a package, "
-            "add it now and finish the task. Reply BLOCKED again only if a "
+            "add it now and finish the task. And a COMPILER ERROR (CS####, "
+            "TS####, 'could not be found', 'undefined reference') is never an "
+            "environment problem — it means YOUR code is wrong: read the error, "
+            "fix the file and line it names. Reply BLOCKED again only if a "
             "genuine system tool is missing."
         )
     reply = agent.run(challenge)
