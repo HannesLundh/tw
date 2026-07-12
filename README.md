@@ -64,6 +64,8 @@ kill it — because code that compiles but crashes on startup is not done.
 | `scripts/setup.sh` | Installs Ollama and pulls the recommended models. |
 | `scripts/serve.sh` | Starts Ollama with memory/concurrency settings tuned for 24 GB. |
 | `docs/models.md` | Which models fit in 24 GB, memory math, and macOS tuning (KV cache, wired-memory limit). |
+| `chat/chat.py` | Interactive chat agent with live web search (see below). |
+| `agents/researcher.md` | System prompt for the chat agent: when to search, how to cite. |
 
 ## Recommended models for 24 GB (short version)
 
@@ -78,6 +80,35 @@ Pick a config with `--config`, e.g.
 `python orchestrator/run_team.py "..." --workspace ~/w --config team-qwen3coder.json`.
 
 Full details, memory math, and tuning: **[docs/models.md](docs/models.md)**.
+
+## Chat agent with web search
+
+A second flow for conversation rather than coding: one researcher agent in a
+REPL, with two tools — `web_search` (DuckDuckGo via the `ddgs` package, no
+API key) and `fetch_page` (URL → readable text). Same local server, same
+robustness tricks as the coding team (text tool-call fallback, context
+trimming, bounded tool rounds, repeated-call cutoff).
+
+```bash
+pip install -r chat/requirements.txt
+ollama pull qwen3:14b        # good chat/reasoning model, ~9 GB
+python chat/chat.py          # /clear resets, /exit quits
+```
+
+```
+you> what did apple announce this week?
+  [web_search] query=apple announcements this week
+  [fetch_page] url=https://www.apple.com/newsroom/...
+<answer with a Sources: line>
+```
+
+Model choice: `qwen3:14b` (the default in `chat/chat.json`) is a better
+conversationalist than the coding models and leaves room to spare;
+`qwen3:4b` is a snappy lightweight option (`--model qwen3:4b`); the
+Devstral you already have works too (`--model devstral-small-2:24b`).
+The prompt tells the model to answer from its own knowledge for stable
+facts and search only when freshness or uncertainty demands it —
+local models that search for everything feel painfully slow.
 
 ## Scaling patterns
 
