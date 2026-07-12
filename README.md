@@ -130,6 +130,13 @@ repo:
   `--verify` command gate, preflight PATH checks, BLOCKED fact-checking,
   and the chat agent's citation check (cited URLs must appear in real tool
   results).
+- **Anti-hallucination double-check** in the chat agent: after any turn
+  that used the web, the draft answer goes through a Chain-of-Verification
+  pass — the model must re-check every claim (names, roles, addresses,
+  dates) against the actual tool results and strip what they don't
+  support, before the user sees it. Costs one extra generation on
+  web-backed turns; disable with `"double_check": false` in
+  `chat/chat.json` if you prefer speed over caution.
 - **Bounded everything**: tool-round caps, repeated-call blocking (reset by
   real file changes), context trimming, hard command timeouts with
   process-group kill.
