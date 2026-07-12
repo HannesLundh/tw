@@ -6,7 +6,8 @@
   },
   "model": "qwen3:14b",
   "system_prompt": "agents/researcher.md",
-  "temperature": 0.6,
+  "temperature": 0.4,
+  "double_check": true,
   "max_tool_rounds": 8,
   "max_context_chars": 60000
 }

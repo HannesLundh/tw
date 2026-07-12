@@ -188,10 +188,45 @@ def shrink(messages: list, budget: int) -> None:
                 break
 
 
+DOUBLE_CHECK_PROMPT = (
+    "Before this answer is shown to the user, fact-check your draft above "
+    "against the tool results earlier in this conversation, claim by claim — "
+    "especially names, roles, affiliations, addresses, dates and numbers. "
+    "Keep only what those results directly support. Delete unsupported "
+    "claims; if one is essential to the answer, keep it but mark it clearly "
+    "as (unverified). Do not add any new facts. Reply with ONLY the "
+    "corrected final answer, keeping a Sources line that cites only URLs "
+    "from the results."
+)
+
+
+def grounded_rewrite(client: OpenAI, config: dict, messages: list, draft: str) -> str:
+    """Chain-of-Verification-style pass: force the model to re-read its own
+    draft against the real tool output before the user sees it. Catches the
+    classic local-model failure of decorating one genuine search result with
+    confabulated surrounding 'facts'."""
+    print("  [double-check] verifying draft claims against tool results")
+    check = messages + [
+        {"role": "assistant", "content": draft},
+        {"role": "user", "content": DOUBLE_CHECK_PROMPT},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=config["model"], messages=check,
+            temperature=0.2, **config.get("params", {}),
+        )
+        revised = (response.choices[0].message.content or "").strip()
+        return revised or draft
+    except Exception:
+        return draft
+
+
 def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
     """One user turn: tool loop until the model produces a normal reply."""
     seen: dict = {}
     citation_retry_used = False
+    used_tools = False
+    double_checked = False
     for _ in range(config.get("max_tool_rounds", 8)):
         shrink(messages, config.get("max_context_chars", 60_000))
         response = client.chat.completions.create(
@@ -216,6 +251,9 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
             text_calls = parse_text_tool_calls(msg.content or "", CHAT_TOOLS)
             if not text_calls:
                 reply = msg.content or ""
+                if used_tools and not double_checked and config.get("double_check", True):
+                    double_checked = True
+                    reply = grounded_rewrite(client, config, messages, reply)
                 fabricated = fabricated_citations(reply, messages)
                 if not fabricated:
                     return reply
@@ -243,6 +281,7 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
 
         text_results = []
         for kind, call_id, name, args in calls:
+            used_tools = True
             print(f"  [{name}] {summarize_args(args)}")
             signature = name + json.dumps(args, sort_keys=True)
             seen[signature] = seen.get(signature, 0) + 1
@@ -273,6 +312,8 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
         **config.get("params", {}),
     )
     reply = response.choices[0].message.content or ""
+    if used_tools and not double_checked and config.get("double_check", True):
+        reply = grounded_rewrite(client, config, messages, reply)
     fabricated = fabricated_citations(reply, messages)
     if fabricated:
         reply += fabrication_warning(fabricated)
