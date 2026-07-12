@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Interactive chat agent with web search, on a local OpenAI-compatible server.
 
 A single researcher agent in a REPL: multi-turn conversation, two tools
@@ -217,35 +218,23 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
     return response.choices[0].message.content or ""
 
 
-def load_config(config_path: str | None = None) -> dict:
-    """Load chat configuration from file."""
-    if config_path is None:
-        config_path = str(REPO_ROOT / "chat" / "chat.json")
-    return json.loads(Path(config_path).read_text())
-
-
-def create_client(config: dict) -> OpenAI:
-    """Create OpenAI client from config."""
-    return OpenAI(
-        base_url=config["server"]["base_url"],
-        api_key=config["server"].get("api_key", "local"),
-        timeout=config["server"].get("request_timeout_seconds", 300),
-        max_retries=1,
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description="Local chat agent with web search.")
     parser.add_argument("--config", default=str(REPO_ROOT / "chat" / "chat.json"))
     parser.add_argument("--model", default=None, help="Override the model from the config.")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config = json.loads(Path(args.config).read_text())
     if args.model:
         config["model"] = args.model
     system_prompt = (REPO_ROOT / config["system_prompt"]).read_text()
 
-    client = create_client(config)
+    client = OpenAI(
+        base_url=config["server"]["base_url"],
+        api_key=config["server"].get("api_key", "local"),
+        timeout=config["server"].get("request_timeout_seconds", 300),
+        max_retries=1,
+    )
     messages: list = [{"role": "system", "content": system_prompt}]
 
     print(f"chat agent ready (model: {config['model']}). "
