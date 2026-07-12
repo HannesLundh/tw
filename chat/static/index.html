@@ -57,6 +57,7 @@
             padding: 12px 16px;
             border-radius: 18px;
             word-wrap: break-word;
+            white-space: pre-wrap;
         }
         
         .user-message {
@@ -78,6 +79,13 @@
             border-top: 1px solid #ddd;
             display: flex;
             gap: 10px;
+            align-items: center;
+        }
+        
+        .input-controls {
+            display: flex;
+            gap: 10px;
+            width: 100%;
         }
         
         #user-input {
@@ -114,10 +122,10 @@
         }
         
         .thinking-indicator {
-            padding: 12px 16px;
             color: #666;
             font-style: italic;
             display: none;
+            padding-left: 10px;
         }
         
         @media (max-width: 768px) {
@@ -147,20 +155,24 @@
             </div>
             
             <div class="input-area">
-                <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off">
-                <button id="send-button" disabled>Send</button>
+                <div class="input-controls">
+                    <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off">
+                    <button id="send-button" disabled>Send</button>
+                </div>
+                <!-- Thinking indicator inside input area -->
+                <div class="thinking-indicator" id="thinking">
+                    Thinking...
+                </div>
             </div>
         </div>
-    </div>
-    
-    <!-- Thinking indicator -->
-    <div class="thinking-indicator" id="thinking">
-        Thinking...
     </div>
 
     <script>
         // Conversation state - starts with empty messages array
         let messages = [];
+        
+        // Track whether a reply is currently being generated
+        let isGeneratingReply = false;
         
         // DOM elements
         const messagesContainer = document.getElementById('messages');
@@ -181,8 +193,16 @@
         
         // Send user message and get reply
         async function sendMessage() {
+            // Don't send if already generating a reply
+            if (isGeneratingReply) {
+                return;
+            }
+            
             const text = userInput.value.trim();
             if (!text) return;
+            
+            // Set flag to indicate we're generating
+            isGeneratingReply = true;
             
             // Add user message to state and display
             messages.push({
@@ -222,16 +242,19 @@
                 console.error('Error:', error);
                 addMessage('assistant', `Error: ${error.message}`);
             } finally {
-                // Re-enable input
-                sendButton.disabled = false;
+                // Re-enable input and reset flag
+                isGeneratingReply = false;
+                sendButton.disabled = userInput.value.trim() === '';
                 thinkingIndicator.style.display = 'none';
             }
         }
         
-        // Handle Enter key
+        // Handle Enter key - only send if not already generating a reply
         userInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                sendMessage();
+                if (!isGeneratingReply) {
+                    sendMessage();
+                }
             }
         });
         
@@ -240,7 +263,7 @@
         
         // Enable/disable send button based on input
         userInput.addEventListener('input', () => {
-            sendButton.disabled = userInput.value.trim() === '';
+            sendButton.disabled = userInput.value.trim() === '' || isGeneratingReply;
         });
         
         // Initialize - enable send button when there's input
