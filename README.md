@@ -136,7 +136,12 @@ Guardrails enforced by the orchestrator:
   yourself) and rerun. A BLOCKED claim is challenged once before aborting,
   because models love this exit: a missing *package* (NuGet, npm, pip,
   cargo) is not a blocker — agents add those themselves with project-local
-  package managers.
+  package managers. Claims are also fact-checked: toolchain binaries named
+  in your request are verified on PATH before any model call (missing ones
+  fail fast as `PREFLIGHT FAILED`), and a BLOCKED naming a tool that IS
+  installed gets refuted with its actual path. Failed commands print their
+  exit code and first error line to the console, so you can see what
+  actually broke.
 - **Placeholder writes are refused**, Python files are syntax-checked on
   write, and pre-run originals of overwritten files are kept in
   `<workspace>/.agent-backups/`.
