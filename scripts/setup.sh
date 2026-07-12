@@ -21,14 +21,16 @@ if ! curl -s http://localhost:11434/api/version >/dev/null 2>&1; then
   sleep 3
 fi
 
-echo "Pulling the main coding model (~9 GB)..."
-ollama pull qwen2.5-coder:14b
+echo "Pulling the main coding model (~15 GB, needs Ollama >= 0.13.3)..."
+ollama pull devstral-small-2:24b
 
 echo "Pulling the small utility model (~2.6 GB)..."
 ollama pull qwen3:4b
 
 echo
 echo "Done. Next: ./scripts/serve.sh to start the tuned server."
-echo "Optional bigger models (see docs/models.md before pulling):"
-echo "  ollama pull devstral:24b       # ~14 GB, strongest tool use"
-echo "  ollama pull qwen3-coder:30b    # ~18 GB MoE, tight fit on 24 GB"
+echo "Recommended for the 15 GB model: raise the GPU wired-memory limit first:"
+echo "  sudo sysctl iogpu.wired_limit_mb=20480   # resets on reboot"
+echo "Alternative models (see docs/models.md, pick with --config):"
+echo "  ollama pull qwen3-coder:30b      # ~19 GB MoE, fastest; team-qwen3coder.json"
+echo "  ollama pull qwen2.5-coder:14b    # ~9 GB lightweight; team-light.json"

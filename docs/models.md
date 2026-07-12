@@ -23,43 +23,50 @@ If the machine starts swapping (Activity Monitor → Memory Pressure goes red),
 you've overcommitted — drop to a smaller model or shorter context rather than
 fighting swap, which makes token generation fall off a cliff.
 
-## Model picks
+## Model picks (updated July 2026)
 
 All sizes are 4-bit quantizations (Q4_K_M or similar), which is the right
 default: quality loss vs 8-bit is small, memory saving is large.
 
-### Daily driver: `qwen2.5-coder:14b` (~9 GB)
+### Default: `devstral-small-2:24b` (~15 GB) — `team.json`
 
-The best coding quality-per-GB in this class. Fits with lots of room for
-context, a second small model, and your IDE. Solid at tool/function calling,
-which the coder and tester agents depend on. **Start here.**
+Mistral's Devstral Small 2 (Dec 2025 weights, needs Ollama >= 0.13.3).
+Built with All Hands AI specifically to drive software-engineering agents:
+multi-step tool use, reading a repo, planning edits across files — exactly
+this repo's workload. Training data is over a year fresher than
+qwen2.5-coder's, which matters for fast-moving stacks (current .NET,
+Azure Functions isolated worker, modern JS tooling). ~68% SWE-Bench
+Verified per Mistral. Dense 24B, so it's the slowest of the picks — worth
+it for reliability. At 15 GB, raise the wired limit
+(`sudo sysctl iogpu.wired_limit_mb=20480`) or drop `OLLAMA_NUM_PARALLEL`
+to 1, and skip the co-loaded utility model.
 
-### Utility: `qwen3:4b` (~2.6 GB)
+### Fast alternative: `qwen3-coder:30b` (MoE, ~19 GB) — `team-qwen3coder.json`
 
-Fast enough to feel instant. Use it for cheap roles — summaries, commit
-messages, triage — and co-load it next to the 14B
-(`OLLAMA_MAX_LOADED_MODELS=2`). To assign it a role, change that agent's
-`model` in `team.json`.
-
-### Tool-use specialist: `devstral:24b` (~14 GB)
-
-Mistral's agentic coding model, trained specifically for multi-step tool use.
-If the coder agent keeps fumbling tool calls with Qwen, try this. It fits,
-but with less spare room — keep context at 16k and skip the co-loaded small
-model, or raise the wired limit as shown above.
-
-### Power option: `qwen3-coder:30b` (MoE, ~18 GB)
-
-A 30B mixture-of-experts model with only ~3B parameters active per token, so
-it generates *faster* than the dense 14B while being noticeably smarter. But
-at ~18 GB plus KV cache it only works on 24 GB if you:
+Qwen3-Coder-30B-A3B: 30B parameters with only ~3B active per token, so it
+generates roughly 2–3× faster than Devstral while scoring close on coding
+benchmarks (Devstral leads on agentic/SWE-bench style work, Qwen3-Coder on
+reasoning). 256K native context. The tighter fit has conditions:
 
 1. raise the wired limit (`sudo sysctl iogpu.wired_limit_mb=20480`),
 2. keep context at 8k–16k with `OLLAMA_KV_CACHE_TYPE=q8_0`,
 3. run it alone (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`),
 4. close memory-hungry apps.
 
-Worth it for hard tasks; not worth it as your always-on default.
+### Lightweight fallback: `qwen2.5-coder:14b` (~9 GB) — `team-light.json`
+
+The former default (late-2024 training data). Still the best
+quality-per-GB if you need the agents running alongside a heavy IDE
+session, but its stale knowledge shows on modern frameworks — expect it to
+write last-generation APIs for fast-moving stacks. Fine for Python
+utilities and well-established libraries.
+
+### Utility: `qwen3:4b` (~2.6 GB)
+
+Fast enough to feel instant. Use it for cheap roles — summaries, commit
+messages, triage — and co-load it next to a ≤14 GB main model
+(`OLLAMA_MAX_LOADED_MODELS=2`). To assign it a role, change that agent's
+`model` in `team.json`. Skip it when running the 15 GB+ models.
 
 ### What to avoid at 24 GB
 
