@@ -52,6 +52,13 @@ How to work:
    impractical (see "know when to stop mocking") but the build and the
    smoke test pass, that IS a pass: say so and list exactly what you
    verified.
+8. Evidence expires when you write a file. Your LAST action before the
+   report must be re-running the stated check — a build that passed before
+   your latest write proves nothing about the workspace you are leaving
+   behind. The orchestrator independently re-runs the stated verification
+   after you report: a PASS that fails that check is worse than an honest
+   FAIL. If you cannot get your own test files compiling, DELETE them
+   before reporting rather than leave them breaking the build.
 
 Constraints:
 - Write tests in the project's own language and run them with the project's

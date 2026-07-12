@@ -158,6 +158,10 @@ class Workspace:
         self.root = root.resolve()
         self.command_timeout = command_timeout
         self.written_files: set[str] = set()
+        # Bumped on every write that actually changes a file; the repetition
+        # guard keys on it so that re-running a command after a real change
+        # is always allowed, while write-nothing-rerun loops stay blocked.
+        self.write_generation = 0
 
     def _resolve(self, rel_path: str) -> Path:
         path = (self.root / rel_path).resolve()
@@ -200,6 +204,15 @@ class Workspace:
                 "complete, literal content of the file."
             )
 
+        # A byte-identical rewrite is a no-op; say so instead of letting the
+        # model believe it "fixed" something.
+        if target.is_file() and target.read_text(errors="replace") == content:
+            return (
+                f"no change: {path} already contains exactly this content. "
+                "Rewriting it cannot change any outcome — if something still "
+                "fails, the cause is elsewhere."
+            )
+
         # Keep the pre-run original of any file we overwrite, so a bad write
         # never destroys the only copy.
         if target.is_file():
@@ -210,6 +223,7 @@ class Workspace:
 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+        self.write_generation += 1
         self.written_files.add(path)
         result = f"wrote {len(content)} chars to {path}"
 
@@ -345,9 +359,11 @@ class Agent:
 
     def _execute(self, name: str, args: dict, seen: dict) -> str:
         """Dispatch a tool call, short-circuiting pathological repetition.
-        Rerunning tests after an edit is normal; making the exact same call a
-        4th time means the agent is looping and needs a shove, not a result."""
-        signature = name + json.dumps(args, sort_keys=True)
+        The signature includes the workspace's write generation, so any call
+        becomes legal again after a file actually changed — rerunning a build
+        after an edit is mandatory, not a loop. Only same-call-with-nothing-
+        changed repetition gets blocked (4th occurrence)."""
+        signature = f"{self.workspace.write_generation}:{name}:" + json.dumps(args, sort_keys=True)
         seen[signature] = seen.get(signature, 0) + 1
         if seen[signature] > 3:
             print(f"    [{self.name}] blocked repeated call: {name}")
@@ -523,6 +539,27 @@ def installed_tools_in(text: str) -> dict:
     }
 
 
+def apply_final_verify(passed: bool, test_report: str, workspace: "Workspace",
+                       verify_cmd: str | None):
+    """Independently run the request's stated verification after a claimed
+    PASS. An agent's word is not evidence: a tester once reported PASS on a
+    build it had broken with its own final file write."""
+    if not (passed and verify_cmd):
+        return passed, test_report
+    banner(f"FINAL VERIFY: {verify_cmd}")
+    result = workspace.run_command(verify_cmd)
+    ok = result.startswith("exit code: 0")
+    print("verified OK" if ok else result[:2500])
+    if not ok:
+        print("Final verification FAILED — overriding the tester's PASS.")
+        test_report += (
+            f"\n\nINDEPENDENT VERIFICATION FAILED: `{verify_cmd}` exited "
+            f"nonzero AFTER you reported PASS — your last file writes likely "
+            f"broke it:\n{result[:4000]}"
+        )
+    return ok, test_report
+
+
 def find_blocked(text: str):
     """Return the BLOCKED: line if an agent declared the task blocked."""
     for line in text.strip().splitlines()[:5]:
@@ -609,7 +646,21 @@ def main():
     parser.add_argument("request", help="What you want built or changed.")
     parser.add_argument("--workspace", required=True, help="Directory the team may read/write.")
     parser.add_argument("--config", default=str(REPO_ROOT / "team.json"))
+    parser.add_argument(
+        "--verify", default=None,
+        help="Shell command that must exit 0 in the workspace for the run to "
+        "pass; overrides the tester's verdict. Default: auto-detected from "
+        "\"verify with '<cmd>'\" in the request.",
+    )
     args = parser.parse_args()
+
+    verify_cmd = args.verify
+    if not verify_cmd:
+        match = re.search(r"[Vv]erif\w*\s+(?:with|using)\s+['\"`]([^'\"`]+)['\"`]", args.request)
+        if match:
+            verify_cmd = match.group(1)
+    if verify_cmd:
+        print(f"Final verification command: {verify_cmd}")
 
     config = json.loads(Path(args.config).read_text())
     workspace_dir = Path(args.workspace).expanduser()
@@ -729,6 +780,7 @@ def main():
     test_report = run_challenging_blocked(agents["tester"], tester_prompt, workspace)
     print(test_report)
     passed = "RESULT: PASS" in test_report
+    passed, test_report = apply_final_verify(passed, test_report, workspace, verify_cmd)
 
     max_fix_rounds = config["pipeline"].get("max_fix_rounds", 2)
     for fix_round in range(1, max_fix_rounds + 1):
@@ -759,6 +811,7 @@ def main():
         )
         print(test_report)
         passed = "RESULT: PASS" in test_report
+        passed, test_report = apply_final_verify(passed, test_report, workspace, verify_cmd)
 
     banner("DONE")
     print(f"Workspace: {workspace.root}")

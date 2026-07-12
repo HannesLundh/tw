@@ -150,6 +150,11 @@ Guardrails enforced by the orchestrator:
 - **Placeholder writes are refused**, Python files are syntax-checked on
   write, and pre-run originals of overwritten files are kept in
   `<workspace>/.agent-backups/`.
+- **PASS is verified, not trusted.** If the request says
+  `verify with '<command>'` (or you pass `--verify '<command>'`), the
+  orchestrator runs that command itself after the tester reports PASS; a
+  nonzero exit overrides the verdict and sends the failure into the fix
+  loop. Always phrase requests with a concrete verification command.
 - **Runaway sessions are bounded**: shell commands are killed (whole process
   group) at a hard timeout, repeated identical tool calls are blocked, an
   agent that keeps hitting blocks is forced to wrap up, old tool output is
