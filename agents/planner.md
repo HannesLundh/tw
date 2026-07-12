@@ -27,13 +27,28 @@ Rules:
   command to start it and an example request/expected response — compiling
   is not the bar, running is.
 
-Output format — respond with ONLY a JSON array, no prose before or after:
+Output format — respond with ONLY this JSON object, no prose before or after:
 
-[
-  {
-    "id": 1,
-    "title": "Short imperative title",
-    "description": "Files to touch, behavior to implement, acceptance criteria, and any assumptions.",
-    "files": ["path/relative/to/workspace.py"]
-  }
-]
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Short imperative title",
+      "description": "Files to touch, behavior to implement, acceptance criteria, and any assumptions.",
+      "files": ["path/relative/to/workspace.py"]
+    }
+  ]
+}
+
+Example — request: "Add a --version flag to the CLI. Verify with 'python cli.py --version'."
+
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Add --version flag to the CLI",
+      "description": "In cli.py, add a --version argument to the existing argparse parser that prints the version string defined in app/__init__.py and exits 0. Acceptance: 'python cli.py --version' prints the version and exits 0; all other commands behave unchanged.",
+      "files": ["cli.py"]
+    }
+  ]
+}

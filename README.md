@@ -110,6 +110,30 @@ The prompt tells the model to answer from its own knowledge for stable
 facts and search only when freshness or uncertainty demands it —
 local models that search for everything feel painfully slow.
 
+## Reliability techniques (implemented)
+
+The consensus tricks for making small local models behave, wired into this
+repo:
+
+- **Schema-constrained decoding** for the planner and reviewer: on Ollama,
+  their JSON is generated under a schema via the native `/api/chat`
+  `format` parameter, so malformed output is mechanically impossible (and
+  it's faster — no tokens wasted deliberating about formatting). Other
+  servers (LM Studio, llama-server) automatically fall back to
+  prompt-and-parse. Configured per agent via `"schema"` in `team.json`.
+- **Few-shot examples** in the planner/reviewer prompts — small models
+  follow one worked example far better than a page of instructions.
+- **Sampling passthrough**: any agent (or the chat config) can set
+  `"params": {"top_p": 0.8, "presence_penalty": 1.0, "seed": 7, ...}` —
+  forwarded to the server per request.
+- **Independent verification** instead of trusting agent claims: the
+  `--verify` command gate, preflight PATH checks, BLOCKED fact-checking,
+  and the chat agent's citation check (cited URLs must appear in real tool
+  results).
+- **Bounded everything**: tool-round caps, repeated-call blocking (reset by
+  real file changes), context trimming, hard command timeouts with
+  process-group kill.
+
 ## Scaling patterns
 
 - **Parallel agents:** `serve.sh` sets `OLLAMA_NUM_PARALLEL=2` so two agents
