@@ -65,12 +65,15 @@ tasks, the **coder** implements each task with file/shell tools, the
 
 ## Recommended models for 24 GB (short version)
 
-| Role | Model | RAM (Q4) | Why |
+| Config | Model | RAM (Q4) | Why |
 |---|---|---|---|
-| Main (coder/planner/reviewer) | `qwen2.5-coder:14b` | ~9 GB | Best coding quality-per-GB; leaves room for context and your IDE. |
-| Utility (summaries, commit msgs) | `qwen3:4b` | ~2.6 GB | Fast, co-loads alongside the main model. |
-| Power option | `qwen3-coder:30b` (MoE, 3B active) | ~18 GB | Faster and smarter, but a tight fit — see `docs/models.md` before using. |
-| Agentic/tool-use option | `devstral:24b` | ~14 GB | Strong tool-calling; good if the coder agent struggles with tools. |
+| `team.json` (default) | `devstral-small-2:24b` | ~15 GB | Dec 2025 agentic coding model, trained for exactly this multi-step tool workload; freshest API knowledge. |
+| `team-qwen3coder.json` | `qwen3-coder:30b` (MoE, 3B active) | ~19 GB | 2–3× faster generation, 256K context; tight fit — see `docs/models.md` first. |
+| `team-light.json` | `qwen2.5-coder:14b` | ~9 GB | Lightweight fallback; late-2024 knowledge shows on modern frameworks. |
+| Utility role | `qwen3:4b` | ~2.6 GB | Cheap roles (summaries, triage); co-load only with the 14B. |
+
+Pick a config with `--config`, e.g.
+`python orchestrator/run_team.py "..." --workspace ~/w --config team-qwen3coder.json`.
 
 Full details, memory math, and tuning: **[docs/models.md](docs/models.md)**.
 
