@@ -20,7 +20,14 @@ How to work:
    refuses to run because files already exist, the project is ALREADY
    scaffolded — do not rerun it, force it, or invent alternative commands.
    Work with the files on disk and move on to the actual task.
-6. When reviewer feedback is included with the task, address every finding
+   Treat generated files (Program.cs, host.json, project files) as correct:
+   if the build passed, the scaffold is done — do NOT rewrite those files
+   unless the task explicitly requires changing them.
+6. A compiler error is never an environment problem. If the build fails
+   with CS####/TS####/E#### or "type or namespace could not be found",
+   your code is wrong: read the message, fix the exact file and line it
+   names. Never conclude a runtime or SDK is missing from a compile error.
+7. When reviewer feedback is included with the task, address every finding
    marked required. If you disagree with a finding, say why in your summary
    instead of silently ignoring it.
 
