@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -130,10 +131,42 @@ def dispatch(name: str, args: dict) -> str:
         if name == "web_search":
             return web_search(args["query"], int(args.get("max_results", 5)))
         if name == "fetch_page":
-            return fetch_page(args["url"])
+            # Echo the URL into the result so the citation check can see it
+            # even when the call arrived via the native tool-call API.
+            return f"Content of {args['url']}:\n{fetch_page(args['url'])}"
         return f"ERROR: unknown tool {name}"
     except Exception as exc:
         return f"ERROR: {exc}"
+
+
+URL_RE = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
+
+
+def fabricated_citations(reply: str, messages: list) -> list[str]:
+    """URLs cited in the reply that never appeared anywhere in the
+    conversation — not in a search result, not in a fetched page, not in an
+    earlier message. Local models invent plausible-looking source links when
+    they skip the search; a link the tools never returned is not a source."""
+    cited = {u.rstrip(".,;:!?") for u in URL_RE.findall(reply)}
+    if not cited:
+        return []
+    # Only tool results and user-provided text count as evidence. The model's
+    # own earlier replies must not — otherwise a fabricated URL launders
+    # itself by having been fabricated once before.
+    conversation_text = "\n".join(
+        str(m.get("content") or "")
+        for m in messages
+        if isinstance(m, dict) and m.get("role") != "assistant"
+    )
+    return sorted(u for u in cited if u not in conversation_text)
+
+
+def fabrication_warning(urls: list[str]) -> str:
+    return (
+        "\n\n⚠️ Automatic citation check: the following cited links never "
+        "appeared in any search or fetch result in this conversation and are "
+        "likely fabricated:\n" + "\n".join(f"  - {u}" for u in urls)
+    )
 
 
 def shrink(messages: list, budget: int) -> None:
@@ -158,6 +191,7 @@ def shrink(messages: list, budget: int) -> None:
 def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
     """One user turn: tool loop until the model produces a normal reply."""
     seen: dict = {}
+    citation_retry_used = False
     for _ in range(config.get("max_tool_rounds", 8)):
         shrink(messages, config.get("max_context_chars", 60_000))
         response = client.chat.completions.create(
@@ -180,7 +214,29 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
         else:
             text_calls = parse_text_tool_calls(msg.content or "", CHAT_TOOLS)
             if not text_calls:
-                return msg.content or ""
+                reply = msg.content or ""
+                fabricated = fabricated_citations(reply, messages)
+                if not fabricated:
+                    return reply
+                if citation_retry_used:
+                    # Challenged once already and it still invented sources:
+                    # ship the reply with the fabrication clearly flagged.
+                    return reply + fabrication_warning(fabricated)
+                citation_retry_used = True
+                print(f"  [citation check] {len(fabricated)} cited URL(s) never "
+                      "appeared in any tool result; challenging the model")
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({
+                    "role": "user",
+                    "content": "CITATION CHECK FAILED. These URLs did not appear in any "
+                    "web_search or fetch_page result in this conversation: "
+                    + ", ".join(u.replace("://", "[:]//") for u in fabricated)
+                    + ". You appear to have invented them. Either call web_search / "
+                    "fetch_page NOW to actually verify, and cite only URLs that appear "
+                    "in the real results — or answer honestly WITHOUT sources, saying "
+                    "plainly what you could not verify. Never fabricate a source.",
+                })
+                continue
             messages.append({"role": "assistant", "content": msg.content})
             calls = [("text", None, name, args) for name, args in text_calls]
 
@@ -214,7 +270,11 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
         model=config["model"], messages=messages,
         temperature=config.get("temperature", 0.6),
     )
-    return response.choices[0].message.content or ""
+    reply = response.choices[0].message.content or ""
+    fabricated = fabricated_citations(reply, messages)
+    if fabricated:
+        reply += fabrication_warning(fabricated)
+    return reply
 
 
 def load_config(config_path: str | None = None) -> dict:
