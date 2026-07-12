@@ -253,6 +253,17 @@ class Workspace:
         try:
             stdout, stderr = proc.communicate(timeout=self.command_timeout)
             header = f"exit code: {proc.returncode}"
+            # Reap anything the command left running (a forgotten background
+            # server would squat on its port for every later command).
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+                header += (
+                    "\nnote: background process(es) left running by this command "
+                    "were terminated. Servers do not survive between commands — "
+                    "start, probe, and kill a server within ONE command."
+                )
+            except (ProcessLookupError, PermissionError):
+                pass
         except subprocess.TimeoutExpired:
             try:
                 # start_new_session makes the group id == proc.pid; killing by

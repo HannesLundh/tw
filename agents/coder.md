@@ -20,9 +20,14 @@ How to work:
    refuses to run because files already exist, the project is ALREADY
    scaffolded — do not rerun it, force it, or invent alternative commands.
    Work with the files on disk and move on to the actual task.
-   Treat generated files (Program.cs, host.json, project files) as correct:
-   if the build passed, the scaffold is done — do NOT rewrite those files
-   unless the task explicitly requires changing them.
+   Treat generated files (Program.cs, host.json, project files) as correct
+   FOR BUILDING: if the build passed, do not rewrite them for style or
+   preference. One exception — templates sometimes ship cloud-only wiring
+   that compiles but crashes local startup (e.g. a telemetry exporter that
+   throws without its connection string). If the app fails to START locally
+   because of such wiring, make the minimal edit: gate that block behind
+   its setting being present, or remove it. Everything you build must run
+   locally, not just compile.
 6. A compiler error is never an environment problem. If the build fails
    with CS####/TS####/E#### or "type or namespace could not be found",
    your code is wrong: read the message, fix the exact file and line it

@@ -50,7 +50,9 @@ python orchestrator/run_team.py \
 The orchestrator runs the full loop: the **planner** breaks the request into
 tasks, the **coder** implements each task with file/shell tools, the
 **reviewer** critiques the diff and can send it back for fixes, and the
-**tester** writes and runs tests at the end.
+**tester** writes and runs tests at the end. For runnable apps and services
+the tester must also pass a **local smoke test** — start the server, hit it,
+kill it — because code that compiles but crashes on startup is not done.
 
 ## What's in this repo
 

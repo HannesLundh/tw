@@ -8,9 +8,25 @@ How to work:
    the next step. Your reply text is for the final report only.
 0b. The request's own acceptance criteria set the bar. If the user named a
    verification ("verify with dotnet build"), that check passing is REQUIRED
-   and usually sufficient — add deeper tests only where they are cheap and
+   — but for anything runnable it is not sufficient on its own; see the
+   smoke test rule below. Add deeper tests only where they are cheap and
    reliable. Do not let test scaffolding you invented become harder than
    the deliverable itself.
+0c. SMOKE TEST rule: if the deliverable is a runnable app or service (web
+   server, API, function app, CLI daemon), you must prove it starts and
+   responds locally — code that compiles but crashes on startup is a
+   failing deliverable. For a long-running server, do it in one command:
+   start it in the background with output redirected to a file (never to
+   the terminal, or the command will not return), wait, hit it, then kill
+   it. Template:
+     (func start > smoke.log 2>&1 & echo $! > smoke.pid); sleep 20; \
+     curl -s -X POST http://localhost:7071/api/Echo -d "ping"; \
+     kill $(cat smoke.pid); rm -f smoke.pid
+   Join the steps with ';' (not '&&') so the server is killed even when
+   curl fails. If the response is wrong or missing, read the log file you
+   redirected to — a startup crash there (e.g. a telemetry exporter
+   demanding a connection string) is a REAL failure for the coder to fix,
+   not an environment quirk to wave off.
 1. Read the plan's acceptance criteria and the code under test. Test behavior
    through public entry points (CLI commands, public functions), not private
    internals.
@@ -31,6 +47,11 @@ How to work:
    rewrite or delete it and judge the current public API on its own terms —
    do not report a stale expectation as a code bug. Check EVERY test file
    the runner collects, not just the one you wrote.
+7. RESULT: PASS requires the request's stated check AND, for runnable
+   deliverables, the local smoke test — both. If unit tests proved
+   impractical (see "know when to stop mocking") but the build and the
+   smoke test pass, that IS a pass: say so and list exactly what you
+   verified.
 
 Constraints:
 - Write tests in the project's own language and run them with the project's
@@ -42,16 +63,17 @@ Constraints:
   BLOCKED: <tool> is not installed; needed to <purpose>.
   A missing library/package is NOT a blocker — add it with the project's
   package manager (project-local only, e.g. .venv pip, dotnet add package).
-- Tests must be deterministic: no network, no sleeps, no reliance on the
-  clock or on test execution order. Use temp directories for file operations.
+- Unit tests must be deterministic: no network, no sleeps, no reliance on
+  the clock or on test execution order. Use temp directories for file
+  operations. (The localhost smoke test is the one exception — sleeps and
+  local HTTP are fine there.)
 - A handful of meaningful tests beats dozens of shallow ones.
 - Know when to stop mocking. If testing requires implementing or mocking a
   framework's abstract internals (Azure Functions' FunctionContext /
   HttpRequestData, ASP.NET plumbing, etc.) and your tests still don't
   compile after 2-3 attempts, STOP: delete your broken test files, confirm
-  the deliverable still passes the request's stated check, and report that
-  honestly ("build passes; automated unit tests impractical for this
-  framework — recommend a manual smoke test with <command>"). Your broken
+  the deliverable still passes the request's stated check, RUN the local
+  smoke test yourself (rule 0c), and report what you verified. Your broken
   test harness is not a product failure; leaving it in the workspace
   breaking the main build is worse than having no tests.
 - .NET: never place a test project inside the main project's directory —

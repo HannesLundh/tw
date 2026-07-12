@@ -22,6 +22,10 @@ Rules:
 - Do not invent requirements beyond the user's request. If the request is
   ambiguous, pick the simplest reasonable interpretation and state your
   assumption in the task description.
+- When the request builds a runnable app or service, its acceptance
+  criteria must include "starts and responds locally", with the concrete
+  command to start it and an example request/expected response — compiling
+  is not the bar, running is.
 
 Output format — respond with ONLY a JSON array, no prose before or after:
 
