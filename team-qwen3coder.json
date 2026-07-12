@@ -9,7 +9,8 @@
       "model": "qwen3-coder:30b",
       "prompt": "agents/planner.md",
       "temperature": 0.3,
-      "tools": false
+      "tools": false,
+      "schema": "plan"
     },
     "coder": {
       "model": "qwen3-coder:30b",
@@ -22,7 +23,8 @@
       "model": "qwen3-coder:30b",
       "prompt": "agents/reviewer.md",
       "temperature": 0.1,
-      "tools": false
+      "tools": false,
+      "schema": "review"
     },
     "tester": {
       "model": "qwen3-coder:30b",

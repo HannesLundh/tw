@@ -199,6 +199,7 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
             messages=messages,
             temperature=config.get("temperature", 0.6),
             tools=TOOL_SCHEMAS,
+            **config.get("params", {}),
         )
         msg = response.choices[0].message
 
@@ -269,6 +270,7 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
     response = client.chat.completions.create(
         model=config["model"], messages=messages,
         temperature=config.get("temperature", 0.6),
+        **config.get("params", {}),
     )
     reply = response.choices[0].message.content or ""
     fabricated = fabricated_citations(reply, messages)

@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 from openai import OpenAI
@@ -89,6 +90,54 @@ PLACEHOLDER_RE = re.compile(r"^<[^<>\n]{0,120}>$")
 # A blocked agent once ran sudo/apt/brew/npm -g in a loop, appended PATH
 # exports to four different shell profiles, and deleted /opt/homebrew/bin/func
 # trying to conjure a missing SDK. Agents must report BLOCKED instead.
+# JSON schemas for the structured-output roles. When the server is Ollama,
+# these are enforced by constrained decoding on the native /api/chat endpoint
+# (format parameter): the model cannot emit tokens that violate the schema,
+# so "reviewer reply was not valid JSON" becomes impossible. Other servers
+# fall back to prompt-and-parse.
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "title", "description"],
+            },
+        }
+    },
+    "required": ["tasks"],
+}
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["approve", "revise"]},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["required", "note"]},
+                    "problem": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+                "required": ["severity", "problem"],
+            },
+        },
+    },
+    "required": ["verdict", "findings"],
+}
+
+SCHEMAS = {"plan": PLAN_SCHEMA, "review": REVIEW_SCHEMA}
+
 # Toolchain binaries worth verifying deterministically. Preflight checks the
 # ones named in the request before any LLM call, and a BLOCKED claim about
 # one of these is fact-checked against PATH instead of taken on faith.
@@ -327,12 +376,17 @@ class Workspace:
 class Agent:
     """One role: a system prompt, a model, and optionally the workspace tools."""
 
-    def __init__(self, name: str, spec: dict, client: OpenAI, workspace: Workspace):
+    def __init__(self, name: str, spec: dict, client: OpenAI, workspace: Workspace,
+                 native_url: str | None = None):
         self.name = name
         self.model = spec["model"]
         self.temperature = spec.get("temperature", 0.2)
         self.use_tools = spec.get("tools", False)
         self.max_tool_rounds = spec.get("max_tool_rounds", 25)
+        self.schema = SCHEMAS.get(spec.get("schema", ""))
+        self.extra_params = spec.get("params", {})
+        self.native_url = native_url
+        self.warned_native_fallback = False
         self.system_prompt = (REPO_ROOT / spec["prompt"]).read_text()
         self.max_context_chars = spec.get("max_context_chars", 60_000)
         self.client = client
@@ -386,12 +440,45 @@ class Agent:
                 print(f"    [{self.name}] ! command timed out")
         return result
 
+    def _structured_native(self, messages: list) -> str | None:
+        """Schema-constrained generation via Ollama's native /api/chat, where
+        the 'format' parameter makes schema-violating output impossible.
+        Returns None on any failure so the caller falls back to prompt-and-
+        parse (e.g. when the server is LM Studio or an older Ollama)."""
+        payload = json.dumps({
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "format": self.schema,
+            "options": {"temperature": self.temperature, **self.extra_params},
+        }).encode()
+        request = urllib.request.Request(
+            f"{self.native_url}/api/chat", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                body = json.loads(response.read())
+            content = body["message"]["content"]
+            json.loads(content)  # must be valid JSON, or fall back
+            return content
+        except Exception as exc:
+            if not self.warned_native_fallback:
+                print(f"  [{self.name}] structured output unavailable "
+                      f"({type(exc).__name__}); falling back to prompt-and-parse")
+                self.warned_native_fallback = True
+            return None
+
     def run(self, user_message: str) -> str:
         """One fresh conversation: system prompt + task, tool loop if enabled."""
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_message},
         ]
+        if self.schema and not self.use_tools and self.native_url:
+            reply = self._structured_native(messages)
+            if reply is not None:
+                return reply
         seen: dict = {}
         blocked_streak = 0
         total_blocked = 0
@@ -407,6 +494,7 @@ class Agent:
                 messages=messages,
                 temperature=self.temperature,
                 tools=TOOL_SCHEMAS if self.use_tools else None,
+                **self.extra_params,
             )
             msg = response.choices[0].message
             batch_results = []
@@ -474,6 +562,7 @@ class Agent:
         messages.append({"role": "user", "content": stop_reason})
         response = self.client.chat.completions.create(
             model=self.model, messages=messages, temperature=self.temperature,
+            **self.extra_params,
         )
         return response.choices[0].message.content or ""
 
@@ -701,8 +790,15 @@ def main():
         timeout=config["server"].get("request_timeout_seconds", 300),
         max_retries=1,
     )
+    # Ollama enforces JSON schemas only on its native endpoint; derive it
+    # from the OpenAI-compatible base_url (".../v1" -> server root).
+    base_url = config["server"]["base_url"].rstrip("/")
+    native_url = config["server"].get(
+        "native_url",
+        base_url[: -len("/v1")] if base_url.endswith("/v1") else None,
+    )
     agents = {
-        name: Agent(name, spec, client, workspace)
+        name: Agent(name, spec, client, workspace, native_url=native_url)
         for name, spec in config["agents"].items()
     }
     max_review_rounds = config["pipeline"].get("max_review_rounds", 2)
@@ -714,6 +810,8 @@ def main():
         f"User request:\n{args.request}\n\nExisting files in the workspace:\n{existing}"
     )
     tasks = extract_json(plan_reply)
+    if isinstance(tasks, dict):
+        tasks = tasks.get("tasks", [])
     for task in tasks:
         print(f"  {task['id']}. {task['title']}")
 

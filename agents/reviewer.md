@@ -38,3 +38,27 @@ Output format — respond with ONLY a JSON object, no prose before or after:
     }
   ]
 }
+
+Example of a revise verdict:
+
+{
+  "verdict": "revise",
+  "findings": [
+    {
+      "file": "todo/store.py",
+      "severity": "required",
+      "problem": "load() crashes with JSONDecodeError when todos.json exists but is empty, which happens after an interrupted first run.",
+      "fix": "Treat an empty or unparseable file the same as a missing file: return an empty list."
+    },
+    {
+      "file": "todo/cli.py",
+      "severity": "note",
+      "problem": "The 'done' handler duplicates the index-validation logic that already exists in store.mark_done().",
+      "fix": "Optional: rely on store.mark_done()'s ValueError instead."
+    }
+  ]
+}
+
+Example of an approve verdict (notes alone do not block):
+
+{"verdict": "approve", "findings": []}
