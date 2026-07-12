@@ -116,7 +116,7 @@ FORBIDDEN_COMMANDS = [
 KNOWN_TOOLS = {"list_files", "read_file", "write_file", "run_command"}
 
 
-def parse_text_tool_calls(text: str) -> list[tuple[str, dict]]:
+def parse_text_tool_calls(text: str, known_tools=None) -> list[tuple[str, dict]]:
     """Extract tool calls a model printed as JSON text instead of using the
     native tool-calling API. Local models do this constantly, even when their
     chat template supports function calling — without this fallback the call
@@ -125,6 +125,8 @@ def parse_text_tool_calls(text: str) -> list[tuple[str, dict]]:
     Recognizes {"name": ..., "arguments": {...}} objects (also "parameters",
     or nested under "function"), anywhere in the reply, fenced or not.
     """
+    if known_tools is None:
+        known_tools = KNOWN_TOOLS
     calls = []
     decoder = json.JSONDecoder()
     idx = 0
@@ -146,7 +148,7 @@ def parse_text_tool_calls(text: str) -> list[tuple[str, dict]]:
                 args = json.loads(args)
             except json.JSONDecodeError:
                 continue
-        if name in KNOWN_TOOLS and isinstance(args, dict):
+        if name in known_tools and isinstance(args, dict):
             calls.append((name, args))
     return calls
 
