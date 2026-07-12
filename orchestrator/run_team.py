@@ -366,7 +366,11 @@ class Agent:
         seen: dict = {}
         blocked_streak = 0
         total_blocked = 0
-        stop_reason = "Tool budget exhausted. Summarize what you completed and what remains."
+        stop_reason = (
+            "Tool budget exhausted. Summarize what you completed and what "
+            "remains. If your role's report format ends with a RESULT: line, "
+            "you MUST include it, based on what you actually observed."
+        )
         for _ in range(self.max_tool_rounds if self.use_tools else 1):
             self._shrink(messages)
             response = self.client.chat.completions.create(
@@ -433,7 +437,8 @@ class Agent:
                     "STOP. Your calls keep being blocked; no further tool calls "
                     "will be executed. Write your final answer now, honestly "
                     "stating what works and what still fails. If you were blocked "
-                    "by a missing tool, make the FIRST line: BLOCKED: <what is missing>."
+                    "by a missing tool, make the FIRST line: BLOCKED: <what is missing>. "
+                    "If your role's report format ends with a RESULT: line, include it."
                 )
                 break
         # Loop ended without a final answer: ask for one, without tools.
