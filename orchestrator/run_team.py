@@ -352,9 +352,7 @@ class Agent:
             # actually broke instead of trusting the agent's diagnosis.
             code = re.match(r"exit code: (\d+)", result)
             if code and code.group(1) != "0":
-                detail = re.search(r"stderr:\n(.+)", result) or re.search(r"stdout:\n(.+)", result)
-                print(f"    [{self.name}] ! exit {code.group(1)}: "
-                      f"{detail.group(1).strip()[:150] if detail else '(no output)'}")
+                print(f"    [{self.name}] ! exit {code.group(1)}: {error_snippet(result)}")
             elif result.startswith("ERROR: command killed"):
                 print(f"    [{self.name}] ! command timed out")
         return result
@@ -444,6 +442,20 @@ class Agent:
             model=self.model, messages=messages, temperature=self.temperature,
         )
         return response.choices[0].message.content or ""
+
+
+def error_snippet(result: str) -> str:
+    """Pick the most informative line of a failed command's output: the first
+    line that mentions an error, else the last non-empty line — build tools
+    tend to bury the verdict at the end, after pages of info chatter."""
+    lines = [
+        line.strip() for line in result.splitlines()[1:]
+        if line.strip() and not line.startswith(("stdout:", "stderr:"))
+    ]
+    for line in lines:
+        if re.search(r"\berror\b|not found|No such file|Unhandled exception", line, re.IGNORECASE):
+            return line[:150]
+    return lines[-1][:150] if lines else "(no output)"
 
 
 def summarize_args(args: dict) -> str:
@@ -554,17 +566,20 @@ def run_challenging_blocked(agent: "Agent", prompt: str, workspace: "Workspace")
         )
     reply = agent.run(challenge)
     blocked = find_blocked(reply)
-    if blocked:
-        contradicted = installed_tools_in(blocked)
-        if contradicted:
-            print(
-                "\nNOTE: the agent insists a tool is missing, but PATH says otherwise:\n  "
-                + "\n  ".join(f"{t} -> {p}" for t, p in contradicted.items())
-                + "\nThe real failure is something else. Reproduce it yourself:\n"
-                f"  cd {workspace.root} && <the failing command>"
-            )
-        abort_blocked(blocked, workspace)
-    return reply
+    if not blocked:
+        return reply
+    contradicted = installed_tools_in(blocked)
+    if contradicted:
+        # The claim is demonstrably false, so this is a confused agent, not a
+        # missing prerequisite. Don't kill a run whose earlier work may be
+        # fine — let the pipeline (review loop, next task, tester) carry on.
+        print(
+            "  NOTE: agent claims a missing tool but PATH disagrees ("
+            + ", ".join(f"{t} -> {p}" for t, p in contradicted.items())
+            + "); continuing the pipeline instead of aborting."
+        )
+        return reply
+    abort_blocked(blocked, workspace)
 
 
 def main():
@@ -578,6 +593,15 @@ def main():
     workspace_dir = Path(args.workspace).expanduser()
     workspace_dir.mkdir(parents=True, exist_ok=True)
     workspace = Workspace(workspace_dir, config["pipeline"].get("command_timeout_seconds", 120))
+
+    existing_files = workspace.list_files()
+    if not existing_files.startswith("("):
+        count = len(existing_files.splitlines())
+        print(
+            f"Note: workspace already contains {count} file(s). Scaffolding tools "
+            "(func init, npm create, ...) may refuse to overwrite existing files — "
+            "for a green-field project, prefer an empty directory."
+        )
 
     # Deterministic environment check before any model time is spent: if the
     # request names a toolchain binary, it must exist on THIS process's PATH

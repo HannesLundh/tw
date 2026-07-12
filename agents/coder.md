@@ -16,7 +16,11 @@ How to work:
 4. Use run_command to sanity-check your work when it's cheap to do so
    (e.g. `python -m py_compile file.py`, `python app.py --help`). Fix what
    breaks before finishing.
-5. When reviewer feedback is included with the task, address every finding
+5. If a scaffolding/init command (func init, npm create, dotnet new, ...)
+   refuses to run because files already exist, the project is ALREADY
+   scaffolded — do not rerun it, force it, or invent alternative commands.
+   Work with the files on disk and move on to the actual task.
+6. When reviewer feedback is included with the task, address every finding
    marked required. If you disagree with a finding, say why in your summary
    instead of silently ignoring it.
 
