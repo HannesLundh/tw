@@ -130,6 +130,11 @@ repo:
   `--verify` command gate, preflight PATH checks, BLOCKED fact-checking,
   and the chat agent's citation check (cited URLs must appear in real tool
   results).
+- **Prompt-injection containment** in the chat agent: fetched pages and
+  search results are fenced as `<<<UNTRUSTED_CONTENT>>>` (data, never
+  instructions), injection-like phrasing gets a ⚠️ flag, and the
+  researcher prompt tells the model to report page instructions rather
+  than obey them. Composes with the read-only tools and citation guard.
 - **Anti-hallucination double-check** in the chat agent: after any turn
   that used the web, the draft answer goes through a Chain-of-Verification
   pass — the model must re-check every claim (names, roles, addresses,
@@ -140,6 +145,29 @@ repo:
 - **Bounded everything**: tool-round caps, repeated-call blocking (reset by
   real file changes), context trimming, hard command timeouts with
   process-group kill.
+
+## Testing
+
+The deterministic scaffold (every guard, the tool-call fallback, the
+citation/CoVe/injection logic, structured-output fallback, the hang-proof
+`run_command`, the full pipeline) has an offline regression suite that
+needs no Ollama — mock servers stand in for the model:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q          # ~80 tests, a few seconds, no model needed
+```
+
+Run it before pushing any change to the harness — it is the harness's own
+`--verify` gate. Tests that need a live model are marked `live` and
+excluded by default (`-m live` to include them).
+
+## Run logs
+
+Both entry points tee their output to a timestamped file under `logs/`
+(git-ignored) so a run can be reviewed after the fact — handy when a local
+model does something surprising. Disable with `--no-log`, relocate with
+`--log-dir DIR`.
 
 ## Scaling patterns
 

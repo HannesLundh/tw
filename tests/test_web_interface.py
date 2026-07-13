@@ -1,78 +1,66 @@
-"""Tests for the FastAPI web interface."""
+"""Tests for the FastAPI web interface. The chat endpoint's model call is
+stubbed, so these run offline and exercise the web plumbing, not the LLM."""
 
-import json
 from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
-# Import the app from chat.web
-from chat.web import app
+import chat.web as web
 
-client = TestClient(app)
+client = TestClient(web.app)
+
+
+@pytest.fixture
+def stub_answer(monkeypatch):
+    """Replace the model call with a stub that echoes what it received, so we
+    can assert on the request plumbing (system-prompt injection, JSON shape)."""
+    captured = {}
+
+    def fake_answer_turn(client_, config, messages):
+        captured["messages"] = messages
+        return "stubbed reply"
+
+    monkeypatch.setattr(web, "answer_turn", fake_answer_turn)
+    return captured
 
 
 def test_get_index_returns_html():
-    """Test that GET / returns HTML content."""
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    # Check for key elements in the HTML
-    html_content = response.text
-    assert "Local Chat Agent" in html_content
-    assert 'id="user-input"' in html_content
-    assert 'id="send-button"' in html_content
-    assert "Thinking..." in html_content
-
-
-def test_post_chat_endpoint():
-    """Test that POST /api/chat accepts messages and returns reply."""
-    # Test with minimal messages
-    test_messages = [
-        {"role": "user", "content": "Hello"}
-    ]
-    
-    response = client.post(
-        "/api/chat",
-        json={"messages": test_messages}
-    )
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert "reply" in data
-    # The reply should be a string (even if empty or error message)
-    assert isinstance(data["reply"], str)
-
-
-def test_post_chat_with_empty_messages():
-    """Test POST /api/chat with empty messages list."""
-    response = client.post(
-        "/api/chat",
-        json={"messages": []}
-    )
-    
-    assert response.status_code == 200
-    data = response.json()
-    assert "reply" in data
-
-
-def test_post_chat_with_invalid_json():
-    """Test POST /api/chat with invalid JSON."""
-    response = client.post(
-        "/api/chat",
-        json={"invalid": "data"}
-    )
-    
-    # Should still return 200 but reply might be an error message
-    assert response.status_code == 200
-    data = response.json()
-    assert "reply" in data
+    html = response.text
+    assert "Local Chat Agent" in html
+    assert 'id="user-input"' in html and 'id="send-button"' in html
+    assert "Thinking..." in html
 
 
 def test_static_files_served():
-    """Test that static files are served correctly."""
-    # Check if index.html exists and is accessible
-    static_path = Path("chat/static/index.html")
-    assert static_path.exists(), "index.html should exist in chat/static/"
-    
-    response = client.get("/static/index.html")
+    assert Path("chat/static/index.html").exists()
+    assert client.get("/static/index.html").status_code == 200
+
+
+def test_post_chat_returns_reply(stub_answer):
+    response = client.post("/api/chat", json={"messages": [{"role": "user", "content": "Hi"}]})
     assert response.status_code == 200
+    assert response.json()["reply"] == "stubbed reply"
+
+
+def test_post_chat_injects_system_prompt(stub_answer):
+    client.post("/api/chat", json={"messages": [{"role": "user", "content": "Hi"}]})
+    roles = [m["role"] for m in stub_answer["messages"]]
+    assert roles[0] == "system"  # server prepends the researcher prompt
+
+
+def test_post_chat_does_not_double_inject_system(stub_answer):
+    client.post("/api/chat", json={"messages": [
+        {"role": "system", "content": "already here"},
+        {"role": "user", "content": "Hi"},
+    ]})
+    assert sum(1 for m in stub_answer["messages"] if m["role"] == "system") == 1
+
+
+def test_post_chat_empty_messages(stub_answer):
+    response = client.post("/api/chat", json={"messages": []})
+    assert response.status_code == 200
+    assert "reply" in response.json()
