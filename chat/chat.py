@@ -139,6 +139,26 @@ class TextExtractor(HTMLParser):
             self.parts.append(" ".join(data.split()))
 
 
+# Sites that render with JavaScript and/or block bots: a plain HTTP fetch
+# gets a 403 or an empty shell, never the content a browser shows. The agent
+# must say so plainly instead of guessing why a page "seems" empty.
+JS_HEAVY_DOMAINS = (
+    "hitta.se", "eniro.se", "ratsit.se", "merinfo.se", "mrkoll.se",
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com",
+    "x.com", "tiktok.com",
+)
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(url).netloc.lower()
+
+
+def _js_heavy(url: str) -> bool:
+    host = _host(url)
+    return any(host == d or host.endswith("." + d) for d in JS_HEAVY_DOMAINS)
+
+
 def fetch_page(url: str, max_chars: int = 8000) -> str:
     if not url.startswith(("http://", "https://")):
         return f"ERROR: not an http(s) URL: {url}"
@@ -148,6 +168,12 @@ def fetch_page(url: str, max_chars: int = 8000) -> str:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read(600_000)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 429):
+            return (f"ERROR: {url} BLOCKED the automated request (HTTP {exc.code}). "
+                    f"{_host(url)} requires a real browser or login and cannot be read "
+                    "by this tool. Do not guess what the page contains.")
+        return f"ERROR: could not fetch {url}: HTTP {exc.code}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return f"ERROR: could not fetch {url}: {exc}"
     parser = TextExtractor()
@@ -156,6 +182,10 @@ def fetch_page(url: str, max_chars: int = 8000) -> str:
     except Exception as exc:
         return f"ERROR: could not parse {url}: {exc}"
     text = "\n".join(parser.parts)
+    if len(text) < 200 and _js_heavy(url):
+        return (f"ERROR: {url} returned almost no readable text — {_host(url)} is a "
+                "JavaScript-rendered / bot-protected site this tool cannot read. "
+                "Do not guess what it says; tell the user it can't be read here.")
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n... [truncated, page has {len(text)} chars of text]"
     return text or f"(no readable text found at {url})"

@@ -135,6 +135,11 @@ repo:
   instructions), injection-like phrasing gets a ⚠️ flag, and the
   researcher prompt tells the model to report page instructions rather
   than obey them. Composes with the read-only tools and citation guard.
+- **Honest fetch failures**: `fetch_page` reports blocked (403) and
+  JavaScript/bot-protected sites (hitta.se, eniro, LinkedIn, ...) as
+  explicit "cannot be read" errors, and the prompt forbids the model
+  from inventing reasons a page "seems" empty or claiming to have
+  visited a URL it never fetched.
 - **Anti-hallucination double-check** in the chat agent: after any turn
   that used the web, the draft answer goes through a Chain-of-Verification
   pass — the model must re-check every claim (names, roles, addresses,
