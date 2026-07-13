@@ -2,3 +2,4 @@ openai>=1.40
 ddgs>=6
 fastapi>=0.109.0
 uvicorn>=0.27.0
+playwright>=1.40  # optional: enables reading JS-rendered / bot-protected sites

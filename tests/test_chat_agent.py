@@ -140,3 +140,71 @@ def test_knowledge_answer_no_tools_no_double_check(mock_llm):
     messages = [{"role": "system", "content": "r"}, {"role": "user", "content": "capital of France?"}]
     reply = answer_turn(_client(srv.base_url), {"model": "m", "max_tool_rounds": 6}, messages)
     assert reply == "The capital of France is Paris."
+
+
+# ---- headless-browser fallback (offline: _http_fetch/_browser_fetch mocked) --
+
+import pytest
+import chat.chat as cc
+
+
+def _boom(*a, **k):
+    raise AssertionError("browser should not have been called")
+
+
+def test_adequate_http_skips_browser(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("ok", "<p>" + "word " * 100 + "</p>"))
+    monkeypatch.setattr(cc, "_browser_fetch", _boom)
+    assert "word" in cc.fetch_page("https://example.com/x")
+
+
+def test_blocked_falls_back_to_browser(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("blocked", 403))
+    monkeypatch.setattr(cc, "_browser_fetch", lambda *a, **k: "RENDERED BODY")
+    assert cc.fetch_page("https://www.hitta.se/x") == "RENDERED BODY"
+
+
+def test_blocked_no_browser_is_honest(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("blocked", 403))
+    monkeypatch.setattr(cc, "_browser_fetch", lambda *a, **k: None)  # playwright missing
+    out = cc.fetch_page("https://www.hitta.se/x")
+    assert "BLOCKED" in out and "No headless browser" in out
+
+
+def test_blocked_browser_also_fails(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("blocked", 403))
+    monkeypatch.setattr(cc, "_browser_fetch", lambda *a, **k: "ERROR: browser fetch failed: boom")
+    out = cc.fetch_page("https://www.hitta.se/x")
+    assert "BLOCKED" in out and "also failed" in out
+
+
+def test_use_browser_false_skips_fallback(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("blocked", 403))
+    monkeypatch.setattr(cc, "_browser_fetch", _boom)
+    assert "BLOCKED" in cc.fetch_page("https://www.hitta.se/x", use_browser=False)
+
+
+def test_js_heavy_empty_shell_falls_back(monkeypatch):
+    monkeypatch.setattr(cc, "_http_fetch", lambda url: ("ok", "<html><body></body></html>"))
+    monkeypatch.setattr(cc, "_browser_fetch", lambda *a, **k: "RENDERED HITTA")
+    assert cc.fetch_page("https://www.hitta.se/hannes") == "RENDERED HITTA"
+
+
+def test_dispatch_threads_use_browser(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cc, "fetch_page", lambda url, use_browser=True: seen.update(ub=use_browser) or "x")
+    cc.dispatch("fetch_page", {"url": "http://x/"}, use_browser=False)
+    assert seen["ub"] is False
+
+
+@pytest.mark.live
+def test_real_browser_render(static_site):
+    pytest.importorskip("playwright")
+    # A page whose text only appears after JS runs.
+    site = static_site(
+        "<html><body><div id='t'></div>"
+        "<script>document.getElementById('t').textContent='rendered-by-js-zanzibar';</script>"
+        "</body></html>"
+    )
+    out = cc.fetch_page(site.url, use_browser=True)
+    assert "zanzibar" in out

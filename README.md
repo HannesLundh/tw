@@ -95,6 +95,14 @@ ollama pull qwen3:14b        # good chat/reasoning model, ~9 GB
 python chat/chat.py          # /clear resets, /exit quits
 ```
 
+To let the agent read JavaScript-heavy / bot-protected sites (hitta.se,
+LinkedIn, ...), also install a headless browser — otherwise those pages
+return an honest "can't be read" error:
+
+```bash
+pip install playwright && playwright install chromium
+```
+
 ```
 you> what did apple announce this week?
   [web_search] query=apple announcements this week
@@ -135,6 +143,15 @@ repo:
   instructions), injection-like phrasing gets a ⚠️ flag, and the
   researcher prompt tells the model to report page instructions rather
   than obey them. Composes with the read-only tools and citation guard.
+- **Headless-browser fetch + honest failures**: `fetch_page` tries a
+  fast HTTP fetch, then falls back to a real headless browser
+  (Playwright/Chromium) to read JavaScript-rendered or bot-protected
+  sites (hitta.se, LinkedIn, ...). If no browser is installed, or a
+  site still can't be read, it returns an explicit "blocked / cannot
+  read" error and the prompt forbids the model from inventing reasons
+  a page "seems" empty or claiming to have visited a URL it never
+  fetched. Install with `pip install playwright && playwright install
+  chromium`; disable with `"use_browser": false` in `chat/chat.json`.
 - **Anti-hallucination double-check** in the chat agent: after any turn
   that used the web, the draft answer goes through a Chain-of-Verification
   pass — the model must re-check every claim (names, roles, addresses,
