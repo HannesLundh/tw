@@ -48,7 +48,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "fetch_page",
-            "description": "Fetch a URL and return its readable text content.",
+            "description": "Fetch a URL and return its readable text. Renders JavaScript / bot-protected sites with a headless browser when needed.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -159,39 +159,95 @@ def _js_heavy(url: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in JS_HEAVY_DOMAINS)
 
 
-def fetch_page(url: str, max_chars: int = 8000) -> str:
-    if not url.startswith(("http://", "https://")):
-        return f"ERROR: not an http(s) URL: {url}"
+def _extract_text(html: str, max_chars: int) -> str:
+    parser = TextExtractor()
+    parser.feed(html)
+    text = "\n".join(parser.parts)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n... [truncated, page has {len(text)} chars of text]"
+    return text
+
+
+def _http_fetch(url: str):
+    """Plain HTTP fetch. Returns ('ok', html) | ('blocked', code) | ('error', msg)."""
     request = urllib.request.Request(
         url, headers={"User-Agent": "Mozilla/5.0 (compatible; local-chat-agent)"}
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            raw = response.read(600_000)
+            return "ok", response.read(600_000).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403, 429):
-            return (f"ERROR: {url} BLOCKED the automated request (HTTP {exc.code}). "
-                    f"{_host(url)} requires a real browser or login and cannot be read "
-                    "by this tool. Do not guess what the page contains.")
-        return f"ERROR: could not fetch {url}: HTTP {exc.code}"
+            return "blocked", exc.code
+        return "error", f"ERROR: could not fetch {url}: HTTP {exc.code}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return f"ERROR: could not fetch {url}: {exc}"
-    parser = TextExtractor()
+        return "error", f"ERROR: could not fetch {url}: {exc}"
+
+
+def _browser_fetch(url: str, max_chars: int, timeout_ms: int = 25000):
+    """Render a page with a headless browser (Playwright/Chromium) to read
+    JS-rendered or bot-protected sites. Returns extracted text, an 'ERROR: ...'
+    string on failure, or None when Playwright isn't installed (the caller then
+    degrades to an honest plain-HTTP message)."""
     try:
-        parser.feed(raw.decode("utf-8", errors="replace"))
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            )
+            try:
+                page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                page.wait_for_timeout(1500)  # let client-side rendering settle
+                html = page.content()
+            finally:
+                browser.close()
     except Exception as exc:
-        return f"ERROR: could not parse {url}: {exc}"
-    text = "\n".join(parser.parts)
-    if len(text) < 200 and _js_heavy(url):
-        return (f"ERROR: {url} returned almost no readable text — {_host(url)} is a "
-                "JavaScript-rendered / bot-protected site this tool cannot read. "
-                "Do not guess what it says; tell the user it can't be read here.")
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n... [truncated, page has {len(text)} chars of text]"
-    return text or f"(no readable text found at {url})"
+        return f"ERROR: browser fetch of {url} failed: {type(exc).__name__}: {exc}"
+    return _extract_text(html, max_chars) or f"(no readable text at {url} even with a browser)"
 
 
-def dispatch(name: str, args: dict) -> str:
+def fetch_page(url: str, max_chars: int = 8000, use_browser: bool = True) -> str:
+    """Read a URL. Tries a fast HTTP fetch first, then falls back to a headless
+    browser when the site blocks bots or renders with JavaScript."""
+    if not url.startswith(("http://", "https://")):
+        return f"ERROR: not an http(s) URL: {url}"
+
+    kind, payload = _http_fetch(url)
+    if kind == "ok":
+        text = _extract_text(payload, max_chars)
+        # Adequate plain-HTTP read: done, no need for the heavy browser.
+        if not (len(text) < 200 and _js_heavy(url)):
+            return text or f"(no readable text found at {url})"
+
+    # Plain fetch was blocked or gave a near-empty JS shell — try the browser.
+    if use_browser:
+        rendered = _browser_fetch(url, max_chars)
+        if rendered is not None and not rendered.startswith("ERROR"):
+            return rendered
+        browser_note = (" A headless browser was tried and also failed."
+                        if rendered else
+                        " No headless browser is available to render it "
+                        "(install playwright + chromium).")
+    else:
+        browser_note = ""
+
+    if kind == "blocked":
+        return (f"ERROR: {url} BLOCKED the automated request (HTTP {payload}). "
+                f"{_host(url)} requires a real browser or login.{browser_note} "
+                "Do not guess what the page contains.")
+    if kind == "error":
+        return payload + browser_note
+    return (f"ERROR: {url} returned almost no readable text — {_host(url)} is a "
+            f"JavaScript-rendered / bot-protected site.{browser_note} "
+            "Do not guess what it says.")
+
+
+def dispatch(name: str, args: dict, use_browser: bool = True) -> str:
     try:
         if name == "web_search":
             return web_search(args["query"], int(args.get("max_results", 5)))
@@ -201,7 +257,7 @@ def dispatch(name: str, args: dict) -> str:
             # fence the body as untrusted so a hostile page can't hijack the
             # agent's instructions.
             url = args["url"]
-            return wrap_untrusted(f"Content of {url}:", fetch_page(url))
+            return wrap_untrusted(f"Content of {url}:", fetch_page(url, use_browser=use_browser))
         return f"ERROR: unknown tool {name}"
     except Exception as exc:
         return f"ERROR: {exc}"
@@ -357,7 +413,7 @@ def answer_turn(client: OpenAI, config: dict, messages: list) -> str:
                 result = ("REPEATED CALL: you already made this exact call. "
                           "Refine the query or answer with what you have.")
             else:
-                result = dispatch(name, args)
+                result = dispatch(name, args, use_browser=config.get("use_browser", True))
             if kind == "native":
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
             else:

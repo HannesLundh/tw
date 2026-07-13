@@ -9,5 +9,6 @@
   "temperature": 0.4,
   "double_check": true,
   "max_tool_rounds": 8,
-  "max_context_chars": 60000
+  "max_context_chars": 60000,
+  "use_browser": true
 }
