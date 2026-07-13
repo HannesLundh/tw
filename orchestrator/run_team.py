@@ -602,6 +602,36 @@ def extract_json(text: str):
     return obj
 
 
+class _Tee:
+    """Duplicate a text stream to several sinks (terminal + log file)."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+
+def start_run_log(log_dir, prefix: str):
+    """Tee stdout/stderr to a timestamped file so a run can be reviewed after
+    the fact. Returns the log path, or None when logging is disabled."""
+    if not log_dir:
+        return None
+    from datetime import datetime
+    directory = Path(log_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}.log"
+    handle = open(path, "a", buffering=1)
+    sys.stdout = _Tee(sys.__stdout__, handle)
+    sys.stderr = _Tee(sys.__stderr__, handle)
+    return path
+
+
 def banner(text: str):
     print(f"\n{'=' * 70}\n{text}\n{'=' * 70}")
 
@@ -743,7 +773,14 @@ def main():
         "pass; overrides the tester's verdict. Default: auto-detected from "
         "\"verify with '<cmd>'\" in the request.",
     )
+    parser.add_argument("--log-dir", default="logs",
+                        help="Directory for timestamped run logs (default: logs).")
+    parser.add_argument("--no-log", action="store_true", help="Disable run logging.")
     args = parser.parse_args()
+
+    log_path = start_run_log(None if args.no_log else args.log_dir, "run")
+    if log_path:
+        print(f"Logging this run to {log_path}")
 
     verify_cmd = args.verify
     if not verify_cmd:

@@ -1,0 +1,4 @@
+# Dependencies for the offline test suite: pip install -r requirements-dev.txt
+-r chat/requirements.txt
+pytest>=8
+httpx>=0.27
