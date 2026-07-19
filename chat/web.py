@@ -2,13 +2,10 @@
 
 from pathlib import Path
 import sys
-import asyncio
-import json
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from openai import OpenAI
 
 # Add repo root to path for imports
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,12 +45,11 @@ def get_index():
         )
 
 @app.post("/api/chat")
-def chat_endpoint(request: Request):
-    """Handle chat requests."""
+def chat_endpoint(data: dict = Body(...)):
+    """Handle chat requests. Declared sync so FastAPI runs it in the thread
+    pool (answer_turn blocks for the whole generation); the body is parsed by
+    FastAPI before the handler runs — no event-loop juggling needed."""
     try:
-        # Get raw body bytes and decode as JSON
-        body_bytes = asyncio.run(request.body())
-        data = json.loads(body_bytes.decode('utf-8'))
         messages = data.get("messages", [])
         
         # Add system prompt if not already present
