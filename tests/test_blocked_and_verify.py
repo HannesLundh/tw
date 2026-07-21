@@ -77,3 +77,17 @@ def test_apply_final_verify_overrides_false_pass(workspace):
 def test_apply_final_verify_confirms_real_pass(workspace):
     passed, report = apply_final_verify(True, "RESULT: PASS", workspace, "true")
     assert passed is True
+
+
+def test_classify_missing_quoted_is_hard():
+    from run_team import classify_missing
+    hard, soft = classify_missing(
+        "scaffold with 'func init --worker-runtime dotnet-isolated' please",
+        ["func", "docker"])
+    assert hard == ["func"] and soft == ["docker"]
+
+
+def test_classify_missing_prose_is_soft():
+    from run_team import classify_missing
+    hard, soft = classify_missing("build this without docker or make", ["docker", "make"])
+    assert hard == [] and set(soft) == {"docker", "make"}

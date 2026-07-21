@@ -80,6 +80,9 @@ def wrap_untrusted(source: str, text: str) -> str:
     """Fence tool output as untrusted data, so the model cannot mistake a web
     page's words for its own instructions. Injection-like phrasing gets an
     explicit warning banner."""
+    # A hostile page could embed the closing marker in its own text to break
+    # out of the fence early; defang any occurrence inside the body.
+    text = text.replace("UNTRUSTED_CONTENT", "UNTRUSTED_C0NTENT")
     banner = ""
     if INJECTION_PATTERNS.search(text):
         banner = (
@@ -218,16 +221,22 @@ def fetch_page(url: str, max_chars: int = 8000, use_browser: bool = True) -> str
         return f"ERROR: not an http(s) URL: {url}"
 
     kind, payload = _http_fetch(url)
+    plain_text = ""
     if kind == "ok":
-        text = _extract_text(payload, max_chars)
+        plain_text = _extract_text(payload, max_chars)
         # Adequate plain-HTTP read: done, no need for the heavy browser.
-        if not (len(text) < 200 and _js_heavy(url)):
-            return text or f"(no readable text found at {url})"
+        if len(plain_text) >= 200:
+            return plain_text
 
-    # Plain fetch was blocked or gave a near-empty JS shell — try the browser.
+    # Blocked, or suspiciously little text (any client-rendered SPA, not just
+    # the known-domain list) — try rendering with a real browser.
     if use_browser:
         rendered = _browser_fetch(url, max_chars)
-        if rendered is not None and not rendered.startswith("ERROR"):
+        rendered_ok = (rendered is not None
+                       and not rendered.startswith("ERROR")
+                       and not rendered.startswith("(no readable")
+                       and len(rendered) > len(plain_text))
+        if rendered_ok:
             return rendered
         browser_note = (" A headless browser was tried and also failed."
                         if rendered else
@@ -242,6 +251,10 @@ def fetch_page(url: str, max_chars: int = 8000, use_browser: bool = True) -> str
                 "Do not guess what the page contains.")
     if kind == "error":
         return payload + browser_note
+    # The plain fetch worked but yielded little. A tiny ordinary page is still
+    # an honest answer; a JS-heavy site's empty shell is not.
+    if plain_text and not _js_heavy(url):
+        return plain_text
     return (f"ERROR: {url} returned almost no readable text — {_host(url)} is a "
             f"JavaScript-rendered / bot-protected site.{browser_note} "
             "Do not guess what it says.")
@@ -271,7 +284,9 @@ def fabricated_citations(reply: str, messages: list) -> list[str]:
     conversation — not in a search result, not in a fetched page, not in an
     earlier message. Local models invent plausible-looking source links when
     they skip the search; a link the tools never returned is not a source."""
-    cited = {u.rstrip(".,;:!?") for u in URL_RE.findall(reply)}
+    # Strip trailing punctuation AND markdown adornments (**bold**, _em_)
+    # that the URL regex can swallow — both caused false fabrication flags.
+    cited = {u.rstrip(".,;:!?*_~") for u in URL_RE.findall(reply)}
     if not cited:
         return []
     # Only tool results and user-provided text count as evidence. The model's
@@ -282,7 +297,10 @@ def fabricated_citations(reply: str, messages: list) -> list[str]:
         for m in messages
         if isinstance(m, dict) and m.get("role") != "assistant"
     )
-    return sorted(u for u in cited if u not in conversation_text)
+    return sorted(
+        u for u in cited
+        if u not in conversation_text and u.rstrip("/") not in conversation_text
+    )
 
 
 def fabrication_warning(urls: list[str]) -> str:

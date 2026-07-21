@@ -86,10 +86,6 @@ IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", ".pytest
 # real content and would silently destroy working files.
 PLACEHOLDER_RE = re.compile(r"^<[^<>\n]{0,120}>$")
 
-# Commands that install software or modify the machine outside the workspace.
-# A blocked agent once ran sudo/apt/brew/npm -g in a loop, appended PATH
-# exports to four different shell profiles, and deleted /opt/homebrew/bin/func
-# trying to conjure a missing SDK. Agents must report BLOCKED instead.
 # JSON schemas for the structured-output roles. When the server is Ollama,
 # these are enforced by constrained decoding on the native /api/chat endpoint
 # (format parameter): the model cannot emit tokens that violate the schema,
@@ -147,6 +143,10 @@ TOOLCHAIN_BINARIES = [
     "php", "docker", "kubectl", "terraform", "make", "cmake", "gcc", "clang",
 ]
 
+# Commands that install software or modify the machine outside the workspace.
+# A blocked agent once ran sudo/apt/brew/npm -g in a loop, appended PATH
+# exports to four different shell profiles, and deleted /opt/homebrew/bin/func
+# trying to conjure a missing SDK. Agents must report BLOCKED instead.
 FORBIDDEN_COMMANDS = [
     (r"\bsudo\b", "sudo"),
     (r"\bapt(-get)?\b", "apt package management"),
@@ -377,7 +377,7 @@ class Agent:
     """One role: a system prompt, a model, and optionally the workspace tools."""
 
     def __init__(self, name: str, spec: dict, client: OpenAI, workspace: Workspace,
-                 native_url: str | None = None):
+                 native_url: str | None = None, request_timeout: int = 300):
         self.name = name
         self.model = spec["model"]
         self.temperature = spec.get("temperature", 0.2)
@@ -386,6 +386,7 @@ class Agent:
         self.schema = SCHEMAS.get(spec.get("schema", ""))
         self.extra_params = spec.get("params", {})
         self.native_url = native_url
+        self.request_timeout = request_timeout
         self.warned_native_fallback = False
         self.system_prompt = (REPO_ROOT / spec["prompt"]).read_text()
         self.max_context_chars = spec.get("max_context_chars", 60_000)
@@ -457,7 +458,7 @@ class Agent:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=300) as response:
+            with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
                 body = json.loads(response.read())
             content = body["message"]["content"]
             json.loads(content)  # must be valid JSON, or fall back
@@ -581,6 +582,23 @@ def error_snippet(result: str) -> str:
     return lines[-1][:150] if lines else "(no output)"
 
 
+def build_file_dump(workspace: "Workspace", paths, cap: int = 30_000) -> str:
+    """Concatenate file contents for review, bounded so a many-file task
+    cannot blow out the reviewer's context window."""
+    parts, used = [], 0
+    for path in paths:
+        content = workspace.read_file(path)
+        remaining = cap - used
+        if remaining <= 0:
+            parts.append(f"### {path}\n[omitted — review size cap reached]")
+            continue
+        if len(content) > remaining:
+            content = content[:remaining] + "\n[... truncated for review size cap ...]"
+        used += len(content)
+        parts.append(f"### {path}\n{content}")
+    return "\n\n".join(parts) or "(no files were written)"
+
+
 def summarize_args(args: dict) -> str:
     parts = []
     for key, value in args.items():
@@ -634,6 +652,17 @@ def start_run_log(log_dir, prefix: str):
 
 def banner(text: str):
     print(f"\n{'=' * 70}\n{text}\n{'=' * 70}")
+
+
+def classify_missing(request: str, missing: list) -> tuple[list, list]:
+    """Split missing preflight tools into hard failures (the tool appears
+    inside a quoted command in the request, so it WILL be executed) and soft
+    prose mentions ("build this without docker" must warn, not abort)."""
+    quoted = " ".join(re.findall(r"['\"`]([^'\"`]+)['\"`]", request))
+    hard = [t for t in missing
+            if re.search(rf"(?<![\w./-]){re.escape(t)}(?![\w-])", quoted)]
+    soft = [t for t in missing if t not in hard]
+    return hard, soft
 
 
 def preflight_tools(request: str):
@@ -811,15 +840,20 @@ def main():
     if found:
         print("Preflight: " + ", ".join(f"{t} -> {p}" for t, p in found.items()))
     if missing:
-        banner("PREFLIGHT FAILED")
-        print("Tool(s) named in your request were not found on PATH:")
-        for tool in missing:
-            print(f"  - {tool}")
-        print(
-            "\nAgents inherit this terminal's environment, so they will hit the "
-            "same wall.\nInstall the missing tool(s) or fix PATH, then rerun."
-        )
-        sys.exit(2)
+        hard, soft = classify_missing(args.request, missing)
+        if soft:
+            print("Preflight warning: mentioned but not on PATH (continuing, "
+                  "since no quoted command uses them): " + ", ".join(soft))
+        if hard:
+            banner("PREFLIGHT FAILED")
+            print("Tool(s) used by quoted commands in your request were not found on PATH:")
+            for tool in hard:
+                print(f"  - {tool}")
+            print(
+                "\nAgents inherit this terminal's environment, so they will hit the "
+                "same wall.\nInstall the missing tool(s) or fix PATH, then rerun."
+            )
+            sys.exit(2)
 
     client = OpenAI(
         base_url=config["server"]["base_url"],
@@ -834,8 +868,10 @@ def main():
         "native_url",
         base_url[: -len("/v1")] if base_url.endswith("/v1") else None,
     )
+    request_timeout = config["server"].get("request_timeout_seconds", 300)
     agents = {
-        name: Agent(name, spec, client, workspace, native_url=native_url)
+        name: Agent(name, spec, client, workspace, native_url=native_url,
+                    request_timeout=request_timeout)
         for name, spec in config["agents"].items()
     }
     max_review_rounds = config["pipeline"].get("max_review_rounds", 2)
@@ -867,6 +903,7 @@ def main():
             f"Files expected: {', '.join(task.get('files', [])) or 'your judgment'}"
         )
 
+        task_start_files = set(workspace.written_files)
         feedback = None
         for round_num in range(max_review_rounds + 1):
             prompt = task_text
@@ -880,15 +917,13 @@ def main():
             coder_summary = run_challenging_blocked(agents["coder"], prompt, workspace)
             print(f"  coder: {coder_summary.strip()[:500]}")
 
-            changed = sorted(workspace.written_files)
-            file_dump = "\n\n".join(
-                f"### {p}\n{workspace.read_file(p)}" for p in changed
-            ) or "(no files were written)"
+            changed = sorted(workspace.written_files - task_start_files)
+            file_dump = build_file_dump(workspace, changed)
             print("  -- reviewer --")
             review_reply = agents["reviewer"].run(
                 f"Task:\n{task['title']}\n{task['description']}\n\n"
                 f"Coder's summary:\n{coder_summary}\n\n"
-                f"Files changed so far in this run:\n{file_dump}"
+                f"Files changed for this task:\n{file_dump}"
             )
             try:
                 review = extract_json(review_reply)
